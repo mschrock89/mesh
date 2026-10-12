@@ -162,12 +162,27 @@ enum UpdateCredential {
         try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path)
     }
 
+    static func ghCandidates() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return [
+            "\(home)/.local/bin/gh",
+            "\(home)/bin/gh",
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh"
+        ]
+    }
+
     static func readGH() async -> String? {
-        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"]
-        guard let gh = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            return nil
+        for gh in ghCandidates() where FileManager.default.isExecutableFile(atPath: gh) {
+            if let token = await token(from: gh) {
+                return token
+            }
         }
-        return await withCheckedContinuation { continuation in
+        return nil
+    }
+
+    private static func token(from gh: String) async -> String? {
+        await withCheckedContinuation { continuation in
             let process = Process()
             let once = ResumeOnce()
             process.executableURL = URL(fileURLWithPath: gh)
@@ -222,8 +237,8 @@ private final class GitHubClient {
     let repo: String
     private let session: URLSession
 
-    init(token: String, repo: String) {
-        self.token = token
+    init(token: String?, repo: String) {
+        self.token = token ?? ""
         self.repo = repo
         let stripper = HeaderStripper()
         let configuration = URLSessionConfiguration.ephemeral
@@ -304,7 +319,9 @@ private final class GitHubClient {
     private func makeRequest(path: String, accept: String) -> URLRequest {
         let url = URL(string: "https://api.github.com\(path)")!
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         request.setValue(accept, forHTTPHeaderField: "Accept")
         request.setValue("Mesh", forHTTPHeaderField: "User-Agent")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
@@ -669,13 +686,7 @@ final class AppUpdateController: ObservableObject {
             publish()
         }
 
-        guard let token = await credentialToken() else {
-            if interactive {
-                askingForToken = true
-                phase = .needsToken
-            }
-            return
-        }
+        let token = await credentialToken()
         let client = GitHubClient(token: token, repo: MeshRelease.repo)
         defer { client.finish() }
 
@@ -685,7 +696,11 @@ final class AppUpdateController: ObservableObject {
                 didResolve = false
                 resolvedToken = nil
                 askingForToken = true
-                phase = .failed("GitHub rejected that token. Paste one that can read \(MeshRelease.repo).")
+                if token == nil {
+                    phase = .needsToken
+                } else {
+                    phase = .failed("GitHub rejected that token. Paste one that can read \(MeshRelease.repo).")
+                }
                 return
             case .allowed:
                 askingForToken = false
@@ -733,12 +748,7 @@ final class AppUpdateController: ObservableObject {
 
     private func install() async {
         guard let pending, !isBusy else { return }
-        guard let token = await credentialToken() else {
-            askingForToken = true
-            phase = .needsToken
-            publish()
-            return
-        }
+        let token = await credentialToken()
         isBusy = true
         phase = .downloading
         publish()

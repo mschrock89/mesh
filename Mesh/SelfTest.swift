@@ -206,6 +206,9 @@ enum SelfTest {
         if !UpdateCheck.same(UpdateCheck.commit(fromTag: tagged), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") {
             failures.append("tagged release should match its commit")
         }
+        if !UpdateCredential.ghCandidates().contains(where: { $0.hasSuffix("/.local/bin/gh") }) {
+            failures.append("github login should be found in .local/bin")
+        }
 
         let json = """
         {"tag_name":"abc123","assets":[{"id":5,"name":"notes.txt"},{"id":9,"name":"Mesh.app.zip"}]}
