@@ -38,6 +38,14 @@ enum AppleMIDI {
         case exit = 0x4259
         case synchronization = 0x434B
         case feedback = 0x5253
+        case directory = 0x4D44
+    }
+
+    struct DirectoryEntry: Equatable {
+        var ip: UInt32
+        var port: UInt16
+        var uuid: String
+        var name: String
     }
 
     struct Exchange {
@@ -67,6 +75,22 @@ enum AppleMIDI {
         case sync(Sync)
         case feedback(ssrc: UInt32, sequence: UInt16)
         case midi(MIDIPayload)
+        case directory(ssrc: UInt32, peers: [DirectoryEntry])
+    }
+
+    static func encodeDirectory(ssrc: UInt32, peers: [DirectoryEntry]) -> Data {
+        var data = Data()
+        data.appendBE(signature)
+        data.appendBE(Command.directory.rawValue)
+        data.appendBE(ssrc)
+        for peer in peers.prefix(8) {
+            var ip = peer.ip
+            withUnsafeBytes(of: &ip) { data.append(contentsOf: $0) }
+            data.appendBE(peer.port)
+            appendCString(&data, peer.uuid)
+            appendCString(&data, peer.name)
+        }
+        return data
     }
 
     static func encodeExchange(_ message: Exchange) -> Data {
@@ -125,9 +149,41 @@ enum AppleMIDI {
             return decodeSync(data).map(Packet.sync)
         case .feedback:
             return decodeFeedback(data)
+        case .directory:
+            return decodeDirectory(data).map { Packet.directory(ssrc: $0.ssrc, peers: $0.peers) }
         default:
             return decodeExchange(data, command: command).map(Packet.exchange)
         }
+    }
+
+    private static func decodeDirectory(_ data: Data) -> (ssrc: UInt32, peers: [DirectoryEntry])? {
+        guard data.count >= 8, let ssrc: UInt32 = readBE(data, 4) else { return nil }
+        var offset = 8
+        var peers: [DirectoryEntry] = []
+        while offset < data.count {
+            guard offset + 6 <= data.count else { return nil }
+            let ip = data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+            offset += 4
+            guard let port: UInt16 = readBE(data, offset) else { return nil }
+            offset += 2
+            guard let uuid = readCString(data, &offset), let name = readCString(data, &offset) else { return nil }
+            peers.append(DirectoryEntry(ip: ip, port: port, uuid: uuid, name: name))
+        }
+        return (ssrc, peers)
+    }
+
+    private static func appendCString(_ data: inout Data, _ string: String) {
+        data.append(contentsOf: string.utf8)
+        data.append(0)
+    }
+
+    private static func readCString(_ data: Data, _ offset: inout Int) -> String? {
+        let start = offset
+        while offset < data.count, data[offset] != 0 { offset += 1 }
+        guard offset < data.count else { return nil }
+        let text = String(decoding: data[start..<offset], as: UTF8.self)
+        offset += 1
+        return text
     }
 
     private static func decodeExchange(_ data: Data, command: Command) -> Exchange? {

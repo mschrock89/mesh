@@ -26,6 +26,10 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>MeshCommit</key>
+	<string>unknown</string>
+	<key>MeshRepo</key>
+	<string>mschrock89/mesh</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_mesh-midi._udp</string>

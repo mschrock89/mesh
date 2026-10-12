@@ -1,0 +1,44 @@
+name: Publish Mesh
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-mesh
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          xcodebuild -project Mesh.xcodeproj -scheme Mesh -configuration Release -destination 'platform=macOS' -derivedDataPath build build
+          COMMIT="$(/usr/libexec/PlistBuddy -c 'Print :MeshCommit' build/Build/Products/Release/Mesh.app/Contents/Info.plist)"
+          if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Build was not stamped with a commit ($COMMIT)."
+            exit 1
+          fi
+          echo "COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent build/Build/Products/Release/Mesh.app Mesh.app.zip
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$COMMIT" >/dev/null 2>&1; then
+            echo "Release $COMMIT is already published."
+            exit 0
+          fi
+          gh release create "$COMMIT" Mesh.app.zip \
+            --title "Mesh ${COMMIT:0:7}" \
+            --notes "Installed from the Mesh menu bar with Check for Updates." \
+            --target "$GITHUB_SHA"

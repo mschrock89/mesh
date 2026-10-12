@@ -41,6 +41,37 @@ enum LocalAddresses {
         }
         return found
     }
+
+    /// Lower is better. Loopback and multicast are unusable for a peer.
+    static func rank(ip: UInt32) -> Int {
+        let firstOctet = ip & 0xFF
+        if ip == 0 || firstOctet == 127 || firstOctet >= 224 { return 100 }
+        let linkLocal = (ip & 0xFFFF) == 0xFEA9
+        if sharesSubnet(ip) && !linkLocal { return 0 }
+        if linkLocal { return 40 }
+        return 20
+    }
+
+    private static func sharesSubnet(_ ip: UInt32) -> Bool {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return false }
+        defer { freeifaddrs(first) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            if let sa = current.pointee.ifa_addr,
+               sa.pointee.sa_family == UInt8(AF_INET),
+               let maskPointer = current.pointee.ifa_netmask {
+                let sin = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                let mask = maskPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                let bits = mask.sin_addr.s_addr
+                if bits != 0 && (ip & bits) == (sin.sin_addr.s_addr & bits) {
+                    return true
+                }
+            }
+            cursor = current.pointee.ifa_next
+        }
+        return false
+    }
 }
 
 enum UDPError: Error {

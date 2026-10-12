@@ -13,7 +13,7 @@ final class MeshModel: ObservableObject {
     @Published var launchAtLoginNote: String?
 
     var connectedCount: Int {
-        peers.filter { $0.status == .connected }.count
+        peers.filter(\.isReachable).count
     }
 
     private let engine = MeshEngine()
@@ -77,7 +77,7 @@ final class MeshModel: ObservableObject {
         peers = snapshot.peers
         ready = snapshot.ready
         errorText = snapshot.error
-        let connected = snapshot.peers.filter { $0.status == .connected }.count
+        let connected = snapshot.peers.filter(\.isReachable).count
         if let error = snapshot.error {
             statusText = "Needs attention"
             detailText = error

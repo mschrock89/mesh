@@ -50,13 +50,21 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
     }
 
     func netServiceDidResolveAddress(_ sender: NetService) {
-        guard let address = ipv4(from: sender) else { return }
-        let record = NetService.dictionary(fromTXTRecord: sender.txtRecordData() ?? Data())
-        let uuid = record["id"].flatMap { String(data: $0, encoding: .utf8) }?.lowercased()
-            ?? "name:\(sender.name.lowercased())"
-        if uuid == localUUID { return }
+        remember(sender, txt: sender.txtRecordData() ?? Data())
+    }
+
+    func netService(_ sender: NetService, didUpdateTXTRecord data: Data) {
+        remember(sender, txt: data)
+    }
+
+    private func remember(_ sender: NetService, txt: Data) {
+        let addresses = ipv4s(from: sender)
+        guard let address = addresses.first else { return }
+        let record = NetService.dictionary(fromTXTRecord: txt)
+        let uuid = record["id"].flatMap { String(data: $0, encoding: .utf8) }?.lowercased() ?? ""
+        if !uuid.isEmpty && uuid == localUUID { return }
         if address.port == localPort && localIPs.contains(address.ip) { return }
-        peers[sender.name] = DiscoveredPeer(uuid: uuid, name: sender.name, address: address)
+        peers[sender.name] = DiscoveredPeer(uuid: uuid, name: sender.name, address: address, addresses: addresses)
         onPeers?(Array(peers.values))
     }
 
@@ -64,8 +72,9 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
         log.error("Could not resolve \(sender.name, privacy: .public)")
     }
 
-    private func ipv4(from service: NetService) -> UDPAddress? {
-        guard let addresses = service.addresses else { return nil }
+    private func ipv4s(from service: NetService) -> [UDPAddress] {
+        guard let addresses = service.addresses else { return [] }
+        var found: [UDPAddress] = []
         for data in addresses {
             guard data.count >= MemoryLayout<sockaddr_in>.size else { continue }
             var storage = sockaddr_in()
@@ -76,9 +85,13 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
             guard storage.sin_family == UInt8(AF_INET) else { continue }
             let port = UInt16(bigEndian: storage.sin_port)
             guard port > 0 else { continue }
-            return UDPAddress(ip: storage.sin_addr.s_addr, port: port)
+            let address = UDPAddress(ip: storage.sin_addr.s_addr, port: port)
+            guard LocalAddresses.rank(ip: address.ip) < 100 else { continue }
+            if !found.contains(address) {
+                found.append(address)
+            }
         }
-        return nil
+        return found.sorted { LocalAddresses.rank(ip: $0.ip) < LocalAddresses.rank(ip: $1.ip) }
     }
 
     static let serviceType = "_mesh-midi._udp."

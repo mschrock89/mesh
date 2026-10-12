@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MeshPanel: View {
     @ObservedObject var model: MeshModel
+    @StateObject private var updates = AppUpdateController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +22,7 @@ struct MeshPanel: View {
         .fixedSize(horizontal: true, vertical: true)
         .background(Theme.background)
         .background(WindowBackground(color: Theme.nsBackground))
+        .onAppear { updates.refreshOnOpen() }
     }
 
     private var header: some View {
@@ -158,6 +160,51 @@ struct MeshPanel: View {
                 .foregroundStyle(Theme.muted)
                 .buttonStyle(.plain)
             }
+
+            updateSection
+        }
+    }
+
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(updates.statusText)
+                .font(Theme.body(12))
+                .foregroundStyle(updateTone)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: { updates.perform() }) {
+                Text(updates.buttonTitle)
+                    .font(Theme.body(13))
+                    .foregroundStyle(updates.canInstall ? Theme.yellow : Theme.muted)
+            }
+            .buttonStyle(.plain)
+            .disabled(updates.isButtonDisabled)
+            .opacity(updates.isButtonDisabled ? 0.45 : 1)
+            if updates.askingForToken {
+                SecureField("GitHub token", text: $updates.tokenDraft)
+                    .textFieldStyle(.plain)
+                    .font(Theme.body(13))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Theme.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Theme.border, lineWidth: 1)
+                    )
+                    .onSubmit { updates.perform() }
+            }
+        }
+    }
+
+    private var updateTone: Color {
+        switch updates.tone {
+        case .muted:
+            return Theme.muted
+        case .ready:
+            return Theme.yellow
+        case .failure:
+            return Color(red: 0.86, green: 0.28, blue: 0.28)
         }
     }
 }
@@ -170,23 +217,35 @@ private struct PeerRow: View {
             Circle()
                 .fill(color)
                 .frame(width: 8, height: 8)
-                .shadow(color: color.opacity(peer.status == .connected ? 0.7 : 0), radius: 4)
-            Text(peer.name)
-                .font(Theme.medium(14))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+                .shadow(color: color.opacity(isLive ? 0.7 : 0), radius: 4)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(peer.name)
+                    .font(Theme.medium(14))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if peer.status == .bridged, let via = peer.via {
+                    Text("Through \(via)")
+                        .font(Theme.body(11))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                }
+            }
             Spacer()
             Text(label)
                 .font(Theme.body(12))
-                .foregroundStyle(peer.status == .connected ? Theme.yellow : Theme.muted)
+                .foregroundStyle(isLive ? Theme.yellow : Theme.muted)
         }
         .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
     }
 
+    private var isLive: Bool {
+        peer.status == .connected || peer.status == .bridged
+    }
+
     private var label: String {
         switch peer.status {
-        case .connected: return "Connected"
+        case .connected, .bridged: return "Connected"
         case .connecting: return "Connecting"
         case .waiting: return "Waiting"
         }
@@ -194,7 +253,7 @@ private struct PeerRow: View {
 
     private var color: Color {
         switch peer.status {
-        case .connected: return Theme.yellow
+        case .connected, .bridged: return Theme.yellow
         case .connecting: return Theme.blue
         case .waiting: return Color.white.opacity(0.35)
         }
