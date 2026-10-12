@@ -32,8 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.isVisible = true
         if let button = item.button {
-            button.imagePosition = .imageLeading
-            button.font = .systemFont(ofSize: 13, weight: .medium)
+            button.imagePosition = .imageOnly
             button.target = self
             button.action = #selector(togglePopover(_:))
             button.toolTip = "Mesh"
@@ -65,8 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
         image?.isTemplate = true
         button.image = image
-        button.title = "Mesh"
-        print("Mesh status item \(button.bounds.size.width) x \(button.bounds.size.height)")
+        button.title = ""
     }
 
     @objc private func togglePopover(_ sender: Any?) {
