@@ -33,6 +33,14 @@ enum UpdateCheck {
         return !local.isEmpty && local != "unknown" && local == remote
     }
 
+    /// GitHub rejects a tag that is only a commit hash, so releases are tagged `mesh-<commit>`.
+    static func commit(fromTag tag: String) -> String {
+        let tag = normalize(tag)
+        let prefix = "mesh-"
+        guard tag.hasPrefix(prefix) else { return tag }
+        return String(tag.dropFirst(prefix.count))
+    }
+
     /// `compareStatus` comes from GitHub's compare of this copy...published commit.
     /// "ahead" means the published commit is ahead of this copy.
     static func relation(localCommit: String, remoteTag: String, compareStatus: String?) -> UpdateRelation {
@@ -695,7 +703,7 @@ final class AppUpdateController: ObservableObject {
             }
 
             let local = MeshRelease.commit
-            let remote = release.tagName
+            let remote = UpdateCheck.commit(fromTag: release.tagName)
             let compare: String?
             if UpdateCheck.same(local, remote) || UpdateCheck.normalize(local) == "unknown" {
                 compare = nil

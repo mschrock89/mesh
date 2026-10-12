@@ -34,11 +34,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "$COMMIT" >/dev/null 2>&1; then
-            echo "Release $COMMIT is already published."
+          TAG="mesh-$COMMIT"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG is already published."
             exit 0
           fi
-          gh release create "$COMMIT" Mesh.app.zip \
+          gh release create "$TAG" Mesh.app.zip \
             --title "Mesh ${COMMIT:0:7}" \
             --notes "Installed from the Mesh menu bar with Check for Updates." \
             --target "$GITHUB_SHA"

@@ -41,12 +41,13 @@ fi
 ZIP="$(mktemp -d)/Mesh.app.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-if gh release view "$COMMIT" --repo mschrock89/mesh >/dev/null 2>&1; then
-  echo "Release $COMMIT is already published."
+TAG="mesh-$COMMIT"
+if gh release view "$TAG" --repo mschrock89/mesh >/dev/null 2>&1; then
+  echo "Release $TAG is already published."
   exit 0
 fi
 
-gh release create "$COMMIT" "$ZIP" \
+gh release create "$TAG" "$ZIP" \
   --repo mschrock89/mesh \
   --target main \
   --title "Mesh ${COMMIT:0:7}" \

@@ -199,6 +199,13 @@ enum SelfTest {
         if UpdateCheck.relation(localCommit: "a", remoteTag: "b", compareStatus: "diverged") != .different {
             failures.append("diverged history should be replaceable")
         }
+        let tagged = "mesh-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        if UpdateCheck.commit(fromTag: tagged) != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+            failures.append("release tag should carry the commit")
+        }
+        if !UpdateCheck.same(UpdateCheck.commit(fromTag: tagged), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") {
+            failures.append("tagged release should match its commit")
+        }
 
         let json = """
         {"tag_name":"abc123","assets":[{"id":5,"name":"notes.txt"},{"id":9,"name":"Mesh.app.zip"}]}
