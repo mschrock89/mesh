@@ -59,9 +59,12 @@ final class MIDISession {
     var dialPeersLearnedFromNeighbors = true
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "session")
 
-    init(localName: String, localUUID: String, control: UDPSocket, midi: UDPSocket) {
+    private var roomID: String
+
+    init(localName: String, localUUID: String, control: UDPSocket, midi: UDPSocket, roomID: String = MeshRoom.defaultID) {
         self.localName = localName
         self.localUUID = localUUID.lowercased()
+        self.roomID = MeshRoom.cleanedID(roomID) ?? MeshRoom.defaultID
         self.ssrc = UInt32.random(in: 1..<UInt32.max)
         self.control = control
         self.midi = midi
@@ -163,6 +166,21 @@ final class MIDISession {
                 )
                 self.midi.send(packet, to: link.address.withPort(link.address.port &+ 1))
             }
+        }
+    }
+
+    func setRoom(_ roomID: String) {
+        onQueue {
+            let cleaned = MeshRoom.cleanedID(roomID) ?? MeshRoom.defaultID
+            guard self.roomID != cleaned else { return }
+            self.roomID = cleaned
+            for key in Array(self.links.keys) {
+                if self.links[key]?.phase == .connected {
+                    self.sendExit(self.links[key]!)
+                }
+            }
+            self.links.removeAll()
+            self.publish()
         }
     }
 
@@ -359,6 +377,10 @@ final class MIDISession {
     }
 
     private func handleInvitation(_ message: AppleMIDI.Exchange, from address: UDPAddress, midiPort: Bool) {
+        guard RoomGate.same(message.room, roomID) else {
+            refuse(message, from: address, midiPort: midiPort)
+            return
+        }
         let controlAddress = midiPort ? address.withPort(address.port &- 1) : address
         let key = controlAddress.key
         var link = links[key] ?? Link.incoming(address: controlAddress, name: message.name)
@@ -376,7 +398,7 @@ final class MIDISession {
         }
         link.weInitiate = false
         let reply = AppleMIDI.encodeExchange(
-            .init(command: .accepted, token: message.token, ssrc: ssrc, name: localName)
+            .init(command: .accepted, token: message.token, ssrc: ssrc, name: localName, room: roomID)
         )
         if midiPort {
             midi.send(reply, to: address)
@@ -393,6 +415,7 @@ final class MIDISession {
     }
 
     private func handleAccepted(_ message: AppleMIDI.Exchange, from address: UDPAddress, midiPort: Bool) {
+        guard RoomGate.same(message.room, roomID) else { return }
         let controlAddress = midiPort ? address.withPort(address.port &- 1) : address
         guard var link = links[controlAddress.key], link.weInitiate, message.token == link.token else { return }
         link.lastHeard = Date()
@@ -559,7 +582,7 @@ final class MIDISession {
 
     private func sendInvitation(to link: Link, midiPort: Bool) {
         let packet = AppleMIDI.encodeExchange(
-            .init(command: .invitation, token: link.token, ssrc: ssrc, name: localName)
+            .init(command: .invitation, token: link.token, ssrc: ssrc, name: localName, room: roomID)
         )
         if midiPort {
             midi.send(packet, to: link.address.withPort(link.address.port &+ 1))
@@ -573,6 +596,17 @@ final class MIDISession {
             .init(ssrc: ssrc, count: count, timestamp1: t1, timestamp2: t2, timestamp3: t3)
         )
         midi.send(packet, to: link.address.withPort(link.address.port &+ 1))
+    }
+
+    private func refuse(_ message: AppleMIDI.Exchange, from address: UDPAddress, midiPort: Bool) {
+        let reply = AppleMIDI.encodeExchange(
+            .init(command: .rejected, token: message.token, ssrc: ssrc, name: "")
+        )
+        if midiPort {
+            midi.send(reply, to: address)
+        } else {
+            control.send(reply, to: address)
+        }
     }
 
     private func sendExit(_ link: Link) {

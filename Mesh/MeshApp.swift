@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image?.isTemplate = true
         button.image = image
         button.title = ""
+        button.toolTip = "Mesh · \(model.roomName)"
     }
 
     @objc private func togglePopover(_ sender: Any?) {

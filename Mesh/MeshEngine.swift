@@ -14,9 +14,14 @@ final class MeshEngine {
     }
 
     var onUpdate: ((Snapshot) -> Void)?
+    var onAdvertisedRooms: (([AnnouncedRoom]) -> Void)?
 
     private let localName: String
     private let localUUID: String
+    private var roomID = MeshRoom.defaultID
+    private var roomName = MeshRoom.sanctuaries[0].name
+    private var roomRevision = MeshRoom.sanctuaries[0].revision
+    private var catalog = MeshRoom.sanctuaries
     private var control: UDPSocket?
     private var midiSocket: UDPSocket?
     private var session: MIDISession?
@@ -40,7 +45,36 @@ final class MeshEngine {
         localName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
-    func start() {
+    func start(room: MeshRoom, catalog: [MeshRoom]) {
+        remember(room: room, catalog: catalog)
+        start()
+    }
+
+    func advertise(room: MeshRoom, catalog: [MeshRoom]) {
+        let changingRoom = room.id != roomID
+        remember(room: room, catalog: catalog)
+        let apply = { [weak self] in
+            guard let self else { return }
+            self.publisher?.update(selected: room, catalog: catalog)
+            guard changingRoom else { return }
+            self.session?.setRoom(room.id)
+            self.browser?.setRoom(room.id)
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
+    private func remember(room: MeshRoom, catalog: [MeshRoom]) {
+        roomID = room.id
+        roomName = room.name
+        roomRevision = room.revision
+        self.catalog = catalog
+    }
+
+    private func start() {
         let pair: (UDPSocket, UDPSocket)
         do {
             pair = try UDPSocket.bindPair()
@@ -55,7 +89,8 @@ final class MeshEngine {
             localName: localName,
             localUUID: localUUID,
             control: pair.0,
-            midi: pair.1
+            midi: pair.1,
+            roomID: roomID
         )
         session.onMIDI = { [weak self] data in
             self?.inject(data)
@@ -72,7 +107,7 @@ final class MeshEngine {
         }
 
         emit(peers: [], ready: true, error: nil)
-        print("Mesh ready · \(localName) · port \(pair.0.port)")
+        print("Mesh ready · \(localName) · \(roomName) · port \(pair.0.port)")
         log.info("Mesh ready on port \(pair.0.port, privacy: .public)")
 
         DispatchQueue.main.async { [weak self] in
@@ -90,14 +125,23 @@ final class MeshEngine {
 
     private func startDiscovery() {
         guard let control else { return }
-        let browser = PeerBrowser(localUUID: localUUID, localPort: control.port)
+        let browser = PeerBrowser(localUUID: localUUID, localPort: control.port, roomID: roomID)
         browser.onPeers = { [weak self] peers in
             self?.session?.updateDiscovered(peers)
+        }
+        browser.onRooms = { [weak self] rooms in
+            self?.onAdvertisedRooms?(rooms)
         }
         browser.start()
         self.browser = browser
 
-        let publisher = ServicePublisher(name: localName, port: Int32(control.port), uuid: localUUID)
+        let publisher = ServicePublisher(
+            name: localName,
+            port: Int32(control.port),
+            uuid: localUUID,
+            selected: MeshRoom(id: roomID, name: roomName, revision: roomRevision),
+            catalog: catalog
+        )
         publisher.publish()
         self.publisher = publisher
     }

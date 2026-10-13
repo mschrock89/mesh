@@ -39,7 +39,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Mesh</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Mesh looks for other Macs running Mesh on this network and keeps a MIDI connection open with them.</string>
+	<string>Mesh looks for other Macs running Mesh in the same room and keeps a MIDI connection open with them.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

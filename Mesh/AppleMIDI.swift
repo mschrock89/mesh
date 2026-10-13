@@ -53,6 +53,7 @@ enum AppleMIDI {
         var token: UInt32
         var ssrc: UInt32
         var name: String
+        var room: String = ""
     }
 
     struct Sync {
@@ -101,9 +102,8 @@ enum AppleMIDI {
         data.appendBE(message.token)
         data.appendBE(message.ssrc)
         if message.command == .invitation || message.command == .accepted {
-            var name = Array(message.name.utf8.prefix(63))
-            name.append(0)
-            data.append(contentsOf: name)
+            appendCString(&data, String(decoding: message.name.utf8.prefix(63), as: UTF8.self))
+            appendCString(&data, String(decoding: message.room.utf8.prefix(80), as: UTF8.self))
         }
         return data
     }
@@ -190,7 +190,17 @@ enum AppleMIDI {
         guard data.count >= 16,
               let token: UInt32 = readBE(data, 8),
               let ssrc: UInt32 = readBE(data, 12) else { return nil }
-        return Exchange(command: command, token: token, ssrc: ssrc, name: readName(data, 16))
+        var offset = 16
+        let name: String
+        let room: String
+        if offset < data.count, let decodedName = readCString(data, &offset) {
+            name = decodedName
+            room = offset < data.count ? (readCString(data, &offset) ?? "") : ""
+        } else {
+            name = readName(data, 16)
+            room = ""
+        }
+        return Exchange(command: command, token: token, ssrc: ssrc, name: name, room: room)
     }
 
     private static func decodeSync(_ data: Data) -> Sync? {

@@ -4,6 +4,11 @@ import SwiftUI
 struct MeshPanel: View {
     @ObservedObject var model: MeshModel
     @StateObject private var updates = AppUpdateController()
+    @State private var editingRooms = false
+    @State private var drafts: [String: String] = [:]
+    @State private var newRoomName = ""
+    @State private var lastFocusedRoom: String?
+    @FocusState private var focusedRoom: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,6 +18,7 @@ struct MeshPanel: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 statusCard
+                roomCard
                 peerCard
                 footer
             }
@@ -85,15 +91,145 @@ struct MeshPanel: View {
         .card()
     }
 
+    private var roomCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ROOM")
+                .font(Theme.medium(10))
+                .tracking(1.2)
+                .foregroundStyle(Theme.faint)
+
+            if model.rooms.count > 6 {
+                ScrollView { roomList }
+                    .frame(maxHeight: 240)
+            } else {
+                roomList
+            }
+
+            Text("Macs in different rooms never share MIDI.")
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if editingRooms {
+                roomEditor
+            }
+
+            Button(editingRooms ? "Done" : "Edit rooms") {
+                if editingRooms { commitDrafts() }
+                editingRooms.toggle()
+            }
+            .font(Theme.body(13))
+            .foregroundStyle(Theme.blue)
+            .buttonStyle(.plain)
+        }
+        .card()
+        .onChange(of: focusedRoom) { focused in
+            if let lastFocusedRoom, lastFocusedRoom != focused {
+                commitDraft(lastFocusedRoom)
+            }
+            lastFocusedRoom = focused
+        }
+    }
+
+    private var roomList: some View {
+        VStack(spacing: 0) {
+            ForEach(model.rooms) { room in
+                RoomChoice(
+                    id: room.id,
+                    name: room.name,
+                    selected: room.id == model.roomID,
+                    editing: editingRooms,
+                    canRemove: model.canDeleteRoom(room.id),
+                    nameDraft: Binding(
+                        get: { drafts[room.id] ?? room.name },
+                        set: { drafts[room.id] = $0 }
+                    ),
+                    focused: $focusedRoom,
+                    onSelect: {
+                        commitDrafts()
+                        model.selectRoom(room.id)
+                    },
+                    onSubmit: { commitDraft(room.id) },
+                    onRemove: {
+                        drafts[room.id] = nil
+                        model.deleteRoom(room.id)
+                    }
+                )
+            }
+        }
+    }
+
+    private var roomEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("New room", text: $newRoomName)
+                    .textFieldStyle(.plain)
+                    .font(Theme.body(14))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Theme.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Theme.border, lineWidth: 1)
+                    )
+                    .onSubmit(addRoom)
+                Button("Add", action: addRoom)
+                    .font(Theme.body(13))
+                    .foregroundStyle(Theme.yellow)
+                    .buttonStyle(.plain)
+            }
+            if !model.elsewhere.isEmpty {
+                Text("ALSO ON THE NETWORK")
+                    .font(Theme.medium(10))
+                    .tracking(1.2)
+                    .foregroundStyle(Theme.faint)
+                    .padding(.top, 4)
+                ForEach(model.elsewhere) { room in
+                    HStack {
+                        Text(room.name)
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Add") { model.restoreRoom(room.id) }
+                            .font(Theme.body(13))
+                            .foregroundStyle(Theme.blue)
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func addRoom() {
+        guard model.addRoom(named: newRoomName) else { return }
+        newRoomName = ""
+    }
+
+    private func commitDrafts() {
+        let pending = drafts
+        drafts.removeAll()
+        for (id, name) in pending {
+            model.renameRoom(id, to: name)
+        }
+    }
+
+    private func commitDraft(_ id: String) {
+        guard let name = drafts.removeValue(forKey: id) else { return }
+        model.renameRoom(id, to: name)
+    }
+
     private var peerCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("ON THIS NETWORK")
+            Text("IN THIS ROOM")
                 .font(Theme.medium(10))
                 .tracking(1.2)
                 .foregroundStyle(Theme.faint)
 
             if model.peers.isEmpty {
-                Text("Other Macs running Mesh will show up here and stay connected.")
+                Text("Other Macs in \(model.roomName) will show up here and stay connected.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -206,6 +342,69 @@ struct MeshPanel: View {
         case .failure:
             return Color(red: 0.86, green: 0.28, blue: 0.28)
         }
+    }
+}
+
+private struct RoomChoice: View {
+    var id: String
+    var name: String
+    var selected: Bool
+    var editing: Bool
+    var canRemove: Bool
+    var nameDraft: Binding<String>
+    var focused: FocusState<String?>.Binding
+    var onSelect: () -> Void
+    var onSubmit: () -> Void
+    var onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .stroke(selected ? Theme.yellow : Color.white.opacity(0.35), lineWidth: 1.5)
+                            .frame(width: 14, height: 14)
+                        if selected {
+                            Circle()
+                                .fill(Theme.yellow)
+                                .frame(width: 8, height: 8)
+                        }
+                    }
+                    if !editing {
+                        Text(name)
+                            .font(Theme.medium(14))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: editing ? nil : .infinity, alignment: .leading)
+            .accessibilityLabel(selected ? "\(name), selected" : name)
+
+            if editing {
+                TextField("Room name", text: nameDraft)
+                    .textFieldStyle(.plain)
+                    .font(Theme.medium(14))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .focused(focused, equals: id)
+                    .onSubmit(onSubmit)
+                if canRemove {
+                    Button("Remove", action: onRemove)
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.muted)
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 5)
     }
 }
 

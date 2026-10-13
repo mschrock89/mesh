@@ -3,19 +3,27 @@ import os
 
 final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
     var onPeers: (([DiscoveredPeer]) -> Void)?
+    var onRooms: (([AnnouncedRoom]) -> Void)?
     private let browser = NetServiceBrowser()
     private var services: [String: NetService] = [:]
-    private var peers: [String: DiscoveredPeer] = [:]
+    private var resolved: [String: ResolvedService] = [:]
     private let localUUID: String
     private let localPort: UInt16
     private let localIPs: Set<UInt32>
+    private var roomID: String
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "bonjour")
 
-    init(localUUID: String, localPort: UInt16) {
+    init(localUUID: String, localPort: UInt16, roomID: String) {
         self.localUUID = localUUID.lowercased()
         self.localPort = localPort
         self.localIPs = LocalAddresses.ipv4()
+        self.roomID = MeshRoom.cleanedID(roomID) ?? MeshRoom.defaultID
         super.init()
+    }
+
+    func setRoom(_ roomID: String) {
+        self.roomID = MeshRoom.cleanedID(roomID) ?? MeshRoom.defaultID
+        emit()
     }
 
     func start() {
@@ -27,8 +35,8 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
     func restart() {
         browser.stop()
         services.removeAll()
-        peers.removeAll()
-        onPeers?([])
+        resolved.removeAll()
+        emit()
         browser.searchForServices(ofType: Self.serviceType, inDomain: "local.")
     }
 
@@ -41,8 +49,8 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
         services.removeValue(forKey: service.name)
-        peers.removeValue(forKey: service.name)
-        onPeers?(Array(peers.values))
+        resolved.removeValue(forKey: service.name)
+        emit()
     }
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
@@ -64,8 +72,37 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
         let uuid = record["id"].flatMap { String(data: $0, encoding: .utf8) }?.lowercased() ?? ""
         if !uuid.isEmpty && uuid == localUUID { return }
         if address.port == localPort && localIPs.contains(address.ip) { return }
-        peers[sender.name] = DiscoveredPeer(uuid: uuid, name: sender.name, address: address, addresses: addresses)
-        onPeers?(Array(peers.values))
+        let text = record.reduce(into: [String: String]()) { fields, item in
+            guard let value = String(data: item.value, encoding: .utf8) else { return }
+            fields[item.key] = value
+        }
+        let room = MeshRoom.cleanedID(text["room"] ?? "") ?? ""
+        guard !room.isEmpty else {
+            resolved.removeValue(forKey: sender.name)
+            emit()
+            return
+        }
+        resolved[sender.name] = ResolvedService(
+            peer: DiscoveredPeer(uuid: uuid, name: sender.name, address: address, addresses: addresses),
+            roomID: room,
+            announced: RoomCatalogTXT.announced(from: text)
+        )
+        emit()
+    }
+
+    private func emit() {
+        let peers = resolved.values
+            .filter { $0.roomID == roomID }
+            .map(\.peer)
+        onPeers?(peers)
+        var best: [String: AnnouncedRoom] = [:]
+        for item in resolved.values {
+            for announced in item.announced where !announced.name.isEmpty {
+                if let existing = best[announced.id], existing.revision >= announced.revision { continue }
+                best[announced.id] = announced
+            }
+        }
+        onRooms?(Array(best.values))
     }
 
     func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
@@ -97,19 +134,35 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
     static let serviceType = "_mesh-midi._udp."
 }
 
+private struct ResolvedService {
+    var peer: DiscoveredPeer
+    var roomID: String
+    var announced: [AnnouncedRoom]
+}
+
 final class ServicePublisher: NSObject, NetServiceDelegate {
     private var service: NetService
     private let port: Int32
     private let uuid: String
+    private var catalog: [MeshRoom]
+    private var selected: MeshRoom
     private var retried = false
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "bonjour")
 
-    init(name: String, port: Int32, uuid: String) {
+    init(name: String, port: Int32, uuid: String, selected: MeshRoom, catalog: [MeshRoom]) {
         self.port = port
         self.uuid = uuid
+        self.selected = selected
+        self.catalog = catalog
         service = NetService(domain: "local.", type: PeerBrowser.serviceType, name: name, port: port)
         super.init()
         prepare(service)
+    }
+
+    func update(selected: MeshRoom, catalog: [MeshRoom]) {
+        self.selected = selected
+        self.catalog = catalog
+        applyTXT(service)
     }
 
     func publish() {
@@ -137,8 +190,13 @@ final class ServicePublisher: NSObject, NetServiceDelegate {
     }
 
     private func prepare(_ service: NetService) {
-        let record = NetService.data(fromTXTRecord: ["id": Data(uuid.utf8)])
-        service.setTXTRecord(record)
+        applyTXT(service)
         service.delegate = self
+    }
+
+    private func applyTXT(_ service: NetService) {
+        var fields = RoomCatalogTXT.fields(selected: selected, rooms: catalog).mapValues { Data($0.utf8) }
+        fields["id"] = Data(uuid.utf8)
+        service.setTXTRecord(NetService.data(fromTXTRecord: fields))
     }
 }

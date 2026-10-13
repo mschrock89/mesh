@@ -4,7 +4,14 @@ enum SelfTest {
     static func run() -> Bool {
         var failures: [String] = []
         failures += codecChecks()
+        failures += roomChecks()
         failures += updateChecks()
+        if let isolated = roomIsolationCheck() {
+            failures.append(isolated)
+        }
+        if let changed = roomChangeCheck() {
+            failures.append(changed)
+        }
         if let handshake = handshakeCheck() {
             failures.append(handshake)
         }
@@ -33,8 +40,15 @@ enum SelfTest {
         guard case .exchange(let decoded) = AppleMIDI.decode(AppleMIDI.encodeExchange(invitation)) else {
             return ["invitation did not decode"]
         }
-        if decoded.token != 42 || decoded.ssrc != 99 || decoded.name != "Booth" || decoded.command != .invitation {
+        if decoded.token != 42 || decoded.ssrc != 99 || decoded.name != "Booth" || decoded.command != .invitation || decoded.room != "" {
             failures.append("invitation fields changed")
+        }
+        let placed = AppleMIDI.Exchange(command: .accepted, token: 7, ssrc: 8, name: "Booth", room: "sanctuary-2")
+        guard case .exchange(let placedDecoded) = AppleMIDI.decode(AppleMIDI.encodeExchange(placed)) else {
+            return ["room invitation did not decode"]
+        }
+        if placedDecoded.room != "sanctuary-2" || placedDecoded.name != "Booth" || placedDecoded.command != .accepted {
+            failures.append("room was dropped from the invitation")
         }
 
         let sync = AppleMIDI.Sync(ssrc: 7, count: 1, timestamp1: 10, timestamp2: 20, timestamp3: 30)
@@ -222,6 +236,150 @@ enum SelfTest {
             failures.append("missing asset should not install")
         }
         return failures
+    }
+
+    private static func roomChecks() -> [String] {
+        var failures: [String] = []
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-rooms-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("rooms.json")
+        let suite = "mesh.rooms.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let store = RoomStore(defaults: defaults, fileURL: url)
+        if store.rooms.map(\.id) != MeshRoom.sanctuaries.map(\.id) || store.selectedID != MeshRoom.defaultID {
+            failures.append("a new Mac should start in Sanctuary 1")
+        }
+        if !store.select("sanctuary-3") || store.selected.name != "Sanctuary 3" {
+            failures.append("room selection did not stick")
+        }
+        if !store.rename("sanctuary-3", to: "  Main   Hall ") || store.selected.name != "Main Hall" {
+            failures.append("room rename did not stick")
+        }
+        guard let added = store.add(named: "Chapel") else {
+            failures.append("could not add a room")
+            return failures
+        }
+        if store.delete("sanctuary-1") {
+            failures.append("sanctuary rooms should stay in the list")
+        }
+        if !store.delete(added.id) || store.rooms.contains(where: { $0.id == added.id }) {
+            failures.append("custom room was not removed")
+        }
+        let revived = RoomStore(defaults: defaults, fileURL: url)
+        if revived.selectedID != "sanctuary-3" || revived.selected.name != "Main Hall" {
+            failures.append("room choice was not stored")
+        }
+        if revived.rooms.contains(where: { $0.id == added.id }) {
+            failures.append("removed room came back")
+        }
+        let older = AnnouncedRoom(id: "sanctuary-3", name: "Old Name", revision: 1)
+        let chapel = AnnouncedRoom(id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", name: "Chapel", revision: 50)
+        if !revived.merge([older, chapel]) || !revived.rooms.contains(where: { $0.name == "Chapel" }) {
+            failures.append("a room from another Mac was not added")
+        }
+        if revived.selected.name != "Main Hall" {
+            failures.append("an older name replaced the saved room")
+        }
+        guard let imported = revived.rooms.first(where: { $0.name == "Chapel" }) else { return failures }
+        if !revived.delete(imported.id) {
+            failures.append("imported room could not be removed")
+        }
+        if !revived.merge([chapel]) || !revived.elsewhere.contains(where: { $0.id == chapel.id }) {
+            failures.append("a removed room should stay off this Mac until it is added again")
+        }
+        if !revived.restore(chapel.id) || !revived.rooms.contains(where: { $0.id == chapel.id }) {
+            failures.append("a removed room could not be added again")
+        }
+        if !RoomGate.same("Sanctuary-2", "sanctuary-2") || RoomGate.same("sanctuary-1", "sanctuary-2") || RoomGate.same("", "sanctuary-1") {
+            failures.append("room matching is wrong")
+        }
+        let posted = RoomCatalogTXT.fields(selected: revived.selected, rooms: revived.rooms)
+        let heard = RoomCatalogTXT.announced(from: posted)
+        if !heard.contains(where: { $0.id == "sanctuary-3" && $0.name == "Main Hall" }) || !heard.contains(where: { $0.name == "Chapel" }) {
+            failures.append("room list did not travel with the Mac")
+        }
+        return failures
+    }
+
+    private static func roomIsolationCheck() -> String? {
+        guard let leftControl = try? UDPSocket(port: 0),
+              let leftMIDI = try? UDPSocket(port: leftControl.port &+ 1),
+              let rightControl = try? UDPSocket(port: 0),
+              let rightMIDI = try? UDPSocket(port: rightControl.port &+ 1),
+              let leftAddress = UDPAddress.ipv4("127.0.0.1", port: leftControl.port),
+              let rightAddress = UDPAddress.ipv4("127.0.0.1", port: rightControl.port) else {
+            return "could not open room ports"
+        }
+        let left = MIDISession(localName: "Mac A", localUUID: "00000000-0000-0000-0000-000000000001", control: leftControl, midi: leftMIDI, roomID: "sanctuary-1")
+        let right = MIDISession(localName: "Mac B", localUUID: "ffffffff-ffff-ffff-ffff-ffffffffffff", control: rightControl, midi: rightMIDI, roomID: "sanctuary-2")
+        let received = Received()
+        right.onMIDI = { received.append($0) }
+        left.onMIDI = { received.appendReturn($0) }
+        left.start()
+        right.start()
+        left.setRoom("sanctuary-1")
+        right.setRoom("sanctuary-2")
+        left.updateDiscovered([DiscoveredPeer(uuid: right.localUUID, name: "Mac B", address: rightAddress)])
+        right.updateDiscovered([DiscoveredPeer(uuid: left.localUUID, name: "Mac A", address: leftAddress)])
+        let connected = waitUntil(2.5) {
+            left.snapshots().contains(where: \.isReachable) || right.snapshots().contains(where: \.isReachable)
+        }
+        let note = Data([0x90, 70, 40])
+        left.broadcast(note)
+        right.broadcast(note)
+        _ = waitUntil(0.4) { false }
+        let leaked = received.contains(note) || received.containsReturn(note)
+        left.stop()
+        right.stop()
+        if connected { return "sanctuary rooms connected to each other" }
+        if leaked { return "midi crossed between rooms" }
+        return nil
+    }
+
+    private static func roomChangeCheck() -> String? {
+        guard let leftControl = try? UDPSocket(port: 0),
+              let leftMIDI = try? UDPSocket(port: leftControl.port &+ 1),
+              let rightControl = try? UDPSocket(port: 0),
+              let rightMIDI = try? UDPSocket(port: rightControl.port &+ 1),
+              let leftAddress = UDPAddress.ipv4("127.0.0.1", port: leftControl.port),
+              let rightAddress = UDPAddress.ipv4("127.0.0.1", port: rightControl.port) else {
+            return "could not open room-change ports"
+        }
+        let left = MIDISession(localName: "Mac A", localUUID: "00000000-0000-0000-0000-000000000001", control: leftControl, midi: leftMIDI, roomID: "sanctuary-1")
+        let right = MIDISession(localName: "Mac B", localUUID: "ffffffff-ffff-ffff-ffff-ffffffffffff", control: rightControl, midi: rightMIDI, roomID: "sanctuary-1")
+        let received = Received()
+        right.onMIDI = { received.append($0) }
+        left.start()
+        right.start()
+        left.updateDiscovered([DiscoveredPeer(uuid: right.localUUID, name: "Mac B", address: rightAddress)])
+        right.updateDiscovered([DiscoveredPeer(uuid: left.localUUID, name: "Mac A", address: leftAddress)])
+        guard waitUntil(4, {
+            left.snapshots().contains(where: \.isReachable) && right.snapshots().contains(where: \.isReachable)
+        }) else {
+            let detail = "left=\(left.debugSummary()) right=\(right.debugSummary())"
+            left.stop()
+            right.stop()
+            return "same room did not connect (\(detail))"
+        }
+        right.setRoom("sanctuary-2")
+        guard waitUntil(2, {
+            !left.snapshots().contains(where: \.isReachable) && !right.snapshots().contains(where: \.isReachable)
+        }) else {
+            left.stop()
+            right.stop()
+            return "changing rooms left the Macs connected"
+        }
+        let note = Data([0x90, 71, 40])
+        left.broadcast(note)
+        _ = waitUntil(0.4) { false }
+        let leaked = received.count(of: note) > 0
+        left.stop()
+        right.stop()
+        if leaked { return "midi kept flowing after the room change" }
+        return nil
     }
 
     private static func handshakeCheck() -> String? {
