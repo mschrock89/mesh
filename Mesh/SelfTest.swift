@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum SelfTest {
@@ -6,6 +7,7 @@ enum SelfTest {
         failures += codecChecks()
         failures += roomChecks()
         failures += updateChecks()
+        failures += panelChecks()
         if let isolated = roomIsolationCheck() {
             failures.append(isolated)
         }
@@ -32,6 +34,38 @@ enum SelfTest {
             print("FAIL \(failure)")
         }
         return false
+    }
+
+    private static func panelChecks() -> [String] {
+        var failures: [String] = []
+        guard let image = MenuBarIcon.image() else {
+            return ["menu bar icon is missing"]
+        }
+        if image.size.width < 10 || image.size.height < 10 {
+            failures.append("menu bar icon has no size")
+        }
+
+        let anchor = CGRect(x: 1000, y: 800, width: 22, height: 22)
+        let attached = CGRect(x: 820, y: 400, width: 360, height: 390)
+        if !PopoverPlacement.isAttached(window: attached, anchor: anchor) {
+            failures.append("panel under the status item was treated as detached")
+        }
+        let shifted = CGRect(x: 700, y: 400, width: 360, height: 390)
+        if !PopoverPlacement.isAttached(window: shifted, anchor: anchor) {
+            failures.append("panel kept on screen was treated as detached")
+        }
+        let jumped = CGRect(x: 0, y: 0, width: 360, height: 400)
+        if PopoverPlacement.isAttached(window: jumped, anchor: anchor) {
+            failures.append("panel at the screen origin was treated as attached")
+        }
+        let dropped = CGRect(x: 820, y: 200, width: 360, height: 390)
+        if PopoverPlacement.isAttached(window: dropped, anchor: anchor) {
+            failures.append("panel that fell away from the menu bar was treated as attached")
+        }
+        if PopoverPlacement.isAttached(window: attached, anchor: .zero) {
+            failures.append("a missing status item was treated as attached")
+        }
+        return failures
     }
 
     private static func codecChecks() -> [String] {

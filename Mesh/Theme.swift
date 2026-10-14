@@ -30,19 +30,37 @@ struct WindowBackground: NSViewRepresentable {
     var color: NSColor
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { paint(view) }
+        let view = WindowBackgroundView()
+        view.color = color
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { paint(nsView) }
+        guard let view = nsView as? WindowBackgroundView else { return }
+        view.color = color
+    }
+}
+
+/// Paints the popover window once. Reconnect refreshes the panel many times;
+/// setting `isOpaque` on each of those passes changes the window frame and the panel jumps.
+private final class WindowBackgroundView: NSView {
+    var color: NSColor = .clear {
+        didSet { applyIfNeeded() }
     }
 
-    private func paint(_ view: NSView) {
-        guard let window = view.window else { return }
+    private weak var styledWindow: NSWindow?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        styledWindow = nil
+        applyIfNeeded()
+    }
+
+    private func applyIfNeeded() {
+        guard let window, styledWindow !== window else { return }
         window.backgroundColor = color
         window.isOpaque = true
         window.titlebarAppearsTransparent = true
+        styledWindow = window
     }
 }
