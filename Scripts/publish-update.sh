@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build Mesh and publish it for the Check for Updates button.
-# Commit and push to main first. Each Mac needs a GitHub token the first time.
+# Build Mesh for macOS and Android and publish both update assets.
+# Commit and push to main first. Each device needs a GitHub token the first time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,16 +41,40 @@ fi
 ZIP="$(mktemp -d)/Mesh.app.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
+if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME}/bin/java" ]]; then
+  if /usr/libexec/java_home >/dev/null 2>&1; then
+    export JAVA_HOME="$(/usr/libexec/java_home)"
+  fi
+fi
+if [[ ! -x "${JAVA_HOME:-}/bin/java" ]]; then
+  echo "The Android update needs a JDK. Install Android Studio or set JAVA_HOME." >&2
+  exit 1
+fi
+
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+if [[ ! -f "$ROOT/android/local.properties" ]]; then
+  printf 'sdk.dir=%s\n' "$SDK" > "$ROOT/android/local.properties"
+fi
+"$ROOT/android/gradlew" -p "$ROOT/android" :app:assembleRelease
+BUILT_APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
+if [[ ! -f "$BUILT_APK" ]]; then
+  echo "Gradle did not produce $BUILT_APK." >&2
+  exit 1
+fi
+APK="$(mktemp -d)/Mesh.apk"
+cp "$BUILT_APK" "$APK"
+
 TAG="mesh-$COMMIT"
 if gh release view "$TAG" --repo mschrock89/mesh >/dev/null 2>&1; then
-  echo "Release $TAG is already published."
+  gh release upload "$TAG" "$APK" --repo mschrock89/mesh --clobber
+  echo "Added the Android update to existing release $TAG."
   exit 0
 fi
 
-gh release create "$TAG" "$ZIP" \
+gh release create "$TAG" "$ZIP" "$APK" \
   --repo mschrock89/mesh \
   --target main \
   --title "Mesh ${COMMIT:0:7}" \
-  --notes "Installed from the Mesh menu bar with Check for Updates."
+  --notes "Installed from Mesh with Check for Updates."
 
-echo "Published Mesh ${COMMIT:0:7}. Other Macs can use Check for Updates."
+echo "Published Mesh ${COMMIT:0:7}. Macs and Androids can use Check for Updates."

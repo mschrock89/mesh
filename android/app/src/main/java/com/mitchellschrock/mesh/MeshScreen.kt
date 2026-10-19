@@ -43,6 +43,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,7 +63,7 @@ private val Danger = Color(0xFFDB4747)
 private val Shape = RoundedCornerShape(8.dp)
 
 @Composable
-fun MeshScreen(ui: MeshUi) {
+fun MeshScreen(ui: MeshUi, updates: AppUpdateController) {
     var editing by remember { mutableStateOf(false) }
     var newRoom by remember { mutableStateOf("") }
     val drafts = remember { mutableStateMapOf<String, String>() }
@@ -119,9 +120,59 @@ fun MeshScreen(ui: MeshUi) {
                     onRestore = { MeshHub.restoreRoom(it) }
                 )
                 PeerCard(ui)
+                UpdateCard(updates)
                 Footer()
             }
         }
+    }
+}
+
+@Composable
+private fun UpdateCard(updates: AppUpdateController) {
+    val enabled = !updates.isBusy && (!updates.askingForToken || updates.tokenDraft.isNotBlank())
+    Column(Modifier.card(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextLine("UPDATE", 10, FontWeight.Medium, Faint, spacing = 1.2)
+        TextLine(
+            updates.statusText,
+            12,
+            FontWeight.Normal,
+            if (updates.failed) Danger else if (updates.canInstall) Yellow else Muted
+        )
+        if (updates.askingForToken) {
+            BasicTextField(
+                value = updates.tokenDraft,
+                onValueChange = { updates.tokenDraft = it },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                textStyle = TextStyle(color = Color.White, fontSize = 14.sp, fontFamily = FontFamily.SansSerif),
+                cursorBrush = SolidColor(Blue),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { updates.perform() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Background)
+                    .border(1.dp, Border, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                decorationBox = { inner ->
+                    Box {
+                        if (updates.tokenDraft.isEmpty()) {
+                            TextLine("GitHub token", 14, FontWeight.Normal, Faint)
+                        }
+                        inner()
+                    }
+                }
+            )
+        }
+        TextLine(
+            updates.buttonTitle,
+            13,
+            FontWeight.Normal,
+            if (updates.canInstall) Yellow else Blue,
+            modifier = Modifier
+                .clickable(enabled = enabled, onClick = updates::perform)
+                .padding(vertical = 2.dp)
+        )
     }
 }
 

@@ -4,6 +4,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val meshCommit = providers.exec {
+    workingDir(rootDir.parentFile)
+    commandLine("git", "rev-parse", "HEAD")
+}.standardOutput.asText.get().trim()
+val meshVersionCode = providers.exec {
+    workingDir(rootDir.parentFile)
+    commandLine("git", "rev-list", "--count", "HEAD")
+}.standardOutput.asText.get().trim().toInt()
+
 android {
     namespace = "com.mitchellschrock.mesh"
     compileSdk = 35
@@ -12,13 +21,17 @@ android {
         applicationId = "com.mitchellschrock.mesh"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = meshVersionCode
         versionName = "1.0"
+        buildConfigField("String", "MESH_COMMIT", "\"$meshCommit\"")
+        buildConfigField("String", "MESH_REPO", "\"mschrock89/mesh\"")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // USB installs use this same key, so published APKs can update them in place.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -29,6 +42,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -45,5 +59,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jmdns:jmdns:3.6.1")
 }

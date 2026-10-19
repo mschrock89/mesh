@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
     private var hasBeenActive = false
+    private val updates by lazy { AppUpdateController(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,14 +27,25 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, Intent(this, MeshService::class.java))
         setContent {
             val ui by MeshHub.ui.collectAsState()
-            MeshScreen(ui)
+            MeshScreen(ui, updates)
         }
+        updates.refreshOnOpen()
     }
 
     override fun onStart() {
         super.onStart()
         if (hasBeenActive) MeshHub.noteForeground()
         hasBeenActive = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updates.onResume()
+    }
+
+    override fun onDestroy() {
+        updates.close()
+        super.onDestroy()
     }
 
     private fun requestStartupPermissions() {

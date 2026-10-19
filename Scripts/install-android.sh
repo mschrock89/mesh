@@ -28,5 +28,5 @@ if [[ -x "$SDK/platform-tools/adb" ]]; then
   export PATH="$SDK/platform-tools:$PATH"
 fi
 
-./gradlew :app:installDebug
+./gradlew :app:installRelease
 echo "Installed Mesh. Open it on the tablet and keep it on the same Wi-Fi as the Mac."
