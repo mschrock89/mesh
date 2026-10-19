@@ -1,3 +1,4 @@
+#if !APPSTORE
 import AppKit
 import Combine
 import Foundation
@@ -787,3 +788,4 @@ final class AppUpdateController: ObservableObject {
         objectWillChange.send()
     }
 }
+#endif

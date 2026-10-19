@@ -1,8 +1,12 @@
-import AppKit
 import CoreMIDI
 import Foundation
 import Network
 import os
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 final class MeshEngine {
     struct Snapshot: Equatable {
@@ -31,6 +35,7 @@ final class MeshEngine {
     private var source = MIDIEndpointRef()
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
+    private var liveActivity: NSObjectProtocol?
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "engine")
 
     init() {
@@ -42,7 +47,15 @@ final class MeshEngine {
             UserDefaults.standard.set(created, forKey: savedKey)
             localUUID = created
         }
-        localName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        localName = MeshHost.name
+    }
+
+    /// Bonjour stalls after the phone has been locked. Searching again leaves
+    /// sessions that are already connected alone.
+    func noteForeground() {
+        DispatchQueue.main.async { [weak self] in
+            self?.browser?.restart()
+        }
     }
 
     func start(room: MeshRoom, catalog: [MeshRoom]) {
@@ -75,6 +88,15 @@ final class MeshEngine {
     }
 
     private func start() {
+        // A menu bar app with no window is put to sleep after it sits idle.
+        // The first cue is what wakes Mesh, and that cue is already late by
+        // the time it is delivered, so the lights never see it.
+        if liveActivity == nil {
+            liveActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "Relaying live MIDI cues"
+            )
+        }
         let pair: (UDPSocket, UDPSocket)
         do {
             pair = try UDPSocket.bindPair()
@@ -147,6 +169,7 @@ final class MeshEngine {
     }
 
     private func watchSystem() {
+        #if os(macOS)
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.session?.suspend()
@@ -157,6 +180,7 @@ final class MeshEngine {
                 self?.session?.resume()
             }
         }
+        #endif
 
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
@@ -189,6 +213,7 @@ final class MeshEngine {
             return false
         }
         self.source = source
+        keepMIDIIdentity(source, key: "mesh.midi.sourceID")
 
         var destination = MIDIEndpointRef()
         status = MIDIDestinationCreateWithBlock(client, "Mesh" as CFString, &destination) { [weak self] packetList, _ in
@@ -201,7 +226,40 @@ final class MeshEngine {
             log.error("MIDIDestinationCreate failed: \(status)")
             return false
         }
+        keepMIDIIdentity(destination, key: "mesh.midi.destinationID")
+        // The default schedule delivers a note at its timestamp. ProPresenter
+        // stamps a cue "now", and after an idle morning that time has already
+        // passed when CoreMIDI wakes, so the note is discarded. Any non-zero
+        // advance hands the note over as soon as it is sent.
+        let advance: Int32 = 1
+        status = MIDIObjectSetIntegerProperty(destination, kMIDIPropertyAdvanceScheduleTimeMuSec, advance)
+        if status != noErr {
+            log.error("MIDI schedule setup failed: \(status)")
+        }
+        // CoreMIDI drops the first packet a virtual source emits. Spend that
+        // on an active-sensing byte, which Light Key does not treat as a cue.
+        primeSource()
         return true
+    }
+
+    private func keepMIDIIdentity(_ endpoint: MIDIEndpointRef, key: String) {
+        // ProPresenter and Light Key store the port by this id. A fresh id
+        // every launch makes them reattach on the first cue, and that cue
+        // is the one that never reaches the lights.
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: key) != nil {
+            let saved = Int32(defaults.integer(forKey: key))
+            if saved != 0, MIDIObjectSetIntegerProperty(endpoint, kMIDIPropertyUniqueID, saved) == noErr {
+                return
+            }
+        }
+        var assigned: Int32 = 0
+        guard MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &assigned) == noErr, assigned != 0 else { return }
+        defaults.set(Int(assigned), forKey: key)
+    }
+
+    private func primeSource() {
+        inject(Data([0xFE]))
     }
 
     private func inject(_ data: Data) {
@@ -234,6 +292,38 @@ final class MeshEngine {
         DispatchQueue.main.async { [weak self] in
             self?.onUpdate?(snapshot)
         }
+    }
+}
+
+enum MeshHost {
+    static var name: String {
+        #if os(iOS)
+        let host = ProcessInfo.processInfo.hostName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ".local", with: "")
+        if !host.isEmpty && host != "localhost" {
+            return host
+        }
+        let device = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !device.isEmpty { return device }
+        return UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This iPhone"
+        #else
+        let host = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !host.isEmpty && host != "localhost" {
+            return host
+        }
+        let machine = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !machine.isEmpty { return machine }
+        return "This Mac"
+        #endif
+    }
+
+    static var kindLabel: String {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad ? "THIS IPAD" : "THIS IPHONE"
+        #else
+        "THIS MAC"
+        #endif
     }
 }
 

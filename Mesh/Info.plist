@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>Mesh</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -22,6 +24,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
@@ -39,7 +43,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Mesh</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Mesh looks for other Macs running Mesh in the same room and keeps a MIDI connection open with them.</string>
+	<string>Mesh looks for other devices running Mesh in the same room and keeps a MIDI connection open with them.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

@@ -6,7 +6,9 @@ enum SelfTest {
         var failures: [String] = []
         failures += codecChecks()
         failures += roomChecks()
+        #if !APPSTORE
         failures += updateChecks()
+        #endif
         failures += panelChecks()
         if let isolated = roomIsolationCheck() {
             failures.append(isolated)
@@ -44,6 +46,12 @@ enum SelfTest {
         if image.size.width < 10 || image.size.height < 10 {
             failures.append("menu bar icon has no size")
         }
+        if !image.isTemplate {
+            failures.append("menu bar icon is not a template")
+        }
+        if !iconHasInk(image) {
+            failures.append("menu bar icon draws nothing")
+        }
 
         let anchor = CGRect(x: 1000, y: 800, width: 22, height: 22)
         let attached = CGRect(x: 820, y: 400, width: 360, height: 390)
@@ -66,6 +74,21 @@ enum SelfTest {
             failures.append("a missing status item was treated as attached")
         }
         return failures
+    }
+
+    private static func iconHasInk(_ image: NSImage) -> Bool {
+        guard let rep = image.representations.compactMap({ $0 as? NSBitmapImageRep }).first else {
+            return false
+        }
+        let step = max(1, rep.pixelsWide / 18)
+        for y in stride(from: 0, to: rep.pixelsHigh, by: step) {
+            for x in stride(from: 0, to: rep.pixelsWide, by: step) {
+                if let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.2 {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func codecChecks() -> [String] {
@@ -224,6 +247,7 @@ enum SelfTest {
         return condition()
     }
 
+    #if !APPSTORE
     private static func updateChecks() -> [String] {
         var failures: [String] = []
         if UpdateCheck.relation(localCommit: "abc", remoteTag: "abc", compareStatus: nil) != .upToDate {
@@ -271,6 +295,7 @@ enum SelfTest {
         }
         return failures
     }
+    #endif
 
     private static func roomChecks() -> [String] {
         var failures: [String] = []
@@ -472,6 +497,10 @@ enum SelfTest {
         right.stop()
         if !received.contains(note) || !received.containsReturn(reply) {
             return "midi did not cross the session"
+        }
+        _ = waitUntil(0.4) { false }
+        if received.count(of: note) != 1 {
+            return "the first cue was delivered \(received.count(of: note)) times"
         }
         return nil
     }

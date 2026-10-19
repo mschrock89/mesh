@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 
 enum Theme {
@@ -11,7 +13,9 @@ enum Theme {
     static let muted = Color.white.opacity(0.68)
     static let faint = Color.white.opacity(0.42)
     static let border = Color(red: 0.2, green: 0.2, blue: 0.2)
+    #if os(macOS)
     static let nsBackground = NSColor(srgbRed: 0.071, green: 0.078, blue: 0.086, alpha: 1)
+    #endif
 
     static func display(_ size: CGFloat) -> Font {
         .custom("Avenir Next Demi Bold", size: size)
@@ -26,6 +30,7 @@ enum Theme {
     }
 }
 
+#if os(macOS)
 struct WindowBackground: NSViewRepresentable {
     var color: NSColor
 
@@ -64,3 +69,4 @@ private final class WindowBackgroundView: NSView {
         styledWindow = window
     }
 }
+#endif

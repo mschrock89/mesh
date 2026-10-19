@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<devices>
+    <device name="Mesh" manufacturer="Mesh" product="Mesh">
+        <input-port name="Mesh" />
+        <output-port name="Mesh" />
+    </device>
+</devices>

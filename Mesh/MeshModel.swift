@@ -1,8 +1,10 @@
 import Foundation
+#if os(macOS)
 import ServiceManagement
+#endif
 
 final class MeshModel: ObservableObject {
-    @Published var localName: String = Host.current().localizedName ?? "This Mac"
+    @Published var localName: String = MeshHost.name
     @Published var port: UInt16 = 0
     @Published var peers: [PeerSnapshot] = []
     @Published var ready = false
@@ -23,10 +25,16 @@ final class MeshModel: ObservableObject {
         peers.filter(\.isReachable).count
     }
 
+    var localKind: String {
+        MeshHost.kindLabel
+    }
+
     private let engine = MeshEngine()
     private let roomStore: RoomStore
     private var didStart = false
+    #if os(macOS)
     private let loginDefaultsKey = "mesh.didApplyLoginDefault"
+    #endif
 
     init() {
         let store = RoomStore()
@@ -49,6 +57,7 @@ final class MeshModel: ObservableObject {
             }
         }
         engine.start(room: roomStore.selected, catalog: roomStore.rooms)
+        #if os(macOS)
         if !UserDefaults.standard.bool(forKey: loginDefaultsKey) {
             setLaunchAtLogin(true)
             let status = SMAppService.mainApp.status
@@ -58,10 +67,15 @@ final class MeshModel: ObservableObject {
         } else {
             refreshLogin()
         }
+        #endif
     }
 
     func reconnect() {
         engine.reconnect()
+    }
+
+    func noteForeground() {
+        engine.noteForeground()
     }
 
     func selectRoom(_ id: String) {
@@ -100,6 +114,7 @@ final class MeshModel: ObservableObject {
         advertise()
     }
 
+    #if os(macOS)
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             let service = SMAppService.mainApp
@@ -126,6 +141,7 @@ final class MeshModel: ObservableObject {
             launchAtLoginNote = nil
         }
     }
+    #endif
 
     private func apply(_ snapshot: MeshEngine.Snapshot) {
         localName = snapshot.localName
@@ -166,13 +182,13 @@ final class MeshModel: ObservableObject {
             detailText = "Opening the MIDI network"
         } else if connected == 0 {
             statusText = "Searching"
-            detailText = "Waiting for other Macs in \(roomName)"
+            detailText = "Waiting for other devices in \(roomName)"
         } else if connected == 1 {
             statusText = "Connected"
-            detailText = "1 Mac in \(roomName)"
+            detailText = "1 device in \(roomName)"
         } else {
             statusText = "Connected"
-            detailText = "\(connected) Macs in \(roomName)"
+            detailText = "\(connected) devices in \(roomName)"
         }
     }
 }

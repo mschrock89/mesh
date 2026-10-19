@@ -1,12 +1,16 @@
+#if os(macOS)
 import AppKit
 import Combine
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let model = MeshModel()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var iconObserver: AnyCancellable?
+    private var menuBarObservers: [NSObjectProtocol] = []
+    private var iconWatch: Timer?
+    private var replacingStatusItem = false
     private let popoverAnchor = PopoverAnchor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,13 +29,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSApp.setActivationPolicy(.accessory)
-        installStatusItem()
+        // SwiftUI finishes its scenes after this returns and can remove a status
+        // item created here. Install on the next turn, then check that it stuck.
+        DispatchQueue.main.async { [weak self] in
+            self?.installStatusItem()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                self?.reassertStatusItem(redraw: true, recreateIfDetached: true)
+            }
+        }
         model.start()
     }
 
     private func installStatusItem() {
         // Square length stays put when the artwork updates. A variable-width item
         // slides the open panel around, which reconnect does constantly.
+        let item = makeStatusItem()
+        popoverAnchor.statusItem = item
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.delegate = self
+        let hosting = MeshPanelController(rootView: MeshPanel(model: model))
+        hosting.sizingOptions = .preferredContentSize
+        popover.contentViewController = hosting
+        self.popover = popover
+        popoverAnchor.popover = popover
+
+        iconObserver = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.reassertStatusItem(redraw: false) }
+            }
+        observeMenuBar()
+    }
+
+    private func makeStatusItem() -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.isVisible = true
         if let button = item.button {
@@ -40,37 +73,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
             button.target = self
             button.action = #selector(togglePopover(_:))
-            button.toolTip = "Mesh"
         }
         statusItem = item
-        updateIcon()
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = false
-        let hosting = MeshPanelController(rootView: MeshPanel(model: model))
-        hosting.sizingOptions = .preferredContentSize
-        popover.contentViewController = hosting
-        self.popover = popover
-        popoverAnchor.statusItem = item
-        popoverAnchor.popover = popover
-
-        iconObserver = model.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.updateIcon() }
-            }
+        applyIcon(force: true)
+        return item
     }
 
-    private func updateIcon() {
+    /// The menu bar drops this item on wake, display changes, and when an accessory
+    /// app activates to show the panel. Put the same icon back. A healthy item is left alone.
+    private func reassertStatusItem(redraw: Bool, recreateIfDetached: Bool = false) {
+        guard let item = statusItem, !replacingStatusItem else { return }
+        let detached = item.button == nil || (recreateIfDetached && item.button?.window == nil)
+        if detached {
+            replaceStatusItem()
+            return
+        }
+        if item.length == 0 {
+            item.length = NSStatusItem.squareLength
+        }
+        applyIcon(force: redraw)
+        if popover?.isShown != true {
+            item.button?.highlight(false)
+        }
+    }
+
+    private func replaceStatusItem() {
+        guard !replacingStatusItem else { return }
+        replacingStatusItem = true
+        defer { replacingStatusItem = false }
+        let shown = popover?.isShown == true
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+        let item = makeStatusItem()
+        popoverAnchor.statusItem = item
+        guard shown, let button = item.button, let popover else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popoverAnchor.watch()
+    }
+
+    private func applyIcon(force: Bool) {
         guard let button = statusItem?.button else { return }
-        if button.image == nil {
-            button.image = MenuBarIcon.image()
+        if button.action == nil || button.target as AnyObject !== self {
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+        }
+        if force || button.image == nil, let image = MenuBarIcon.image() {
+            button.image = image
         }
         let tip = "Mesh · \(model.roomName)"
         if button.toolTip != tip {
             button.toolTip = tip
         }
+    }
+
+    private func observeMenuBar() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let names: [Notification.Name] = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.activeSpaceDidChangeNotification
+        ]
+        for name in names {
+            menuBarObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.reassertStatusItem(redraw: true, recreateIfDetached: true)
+            })
+        }
+        menuBarObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reassertStatusItem(redraw: true, recreateIfDetached: true)
+        })
+        menuBarObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reassertStatusItem(redraw: true, recreateIfDetached: true)
+        })
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            self?.reassertStatusItem(redraw: false)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        iconWatch = timer
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        statusItem?.button?.highlight(false)
+        reassertStatusItem(redraw: true)
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -79,12 +172,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(sender)
             return
         }
+        button.highlight(true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popoverAnchor.watch()
         if #available(macOS 14.0, *) {
             NSApp.activate()
         } else {
             NSApp.activate(ignoringOtherApps: true)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.reassertStatusItem(redraw: true)
         }
     }
 }
@@ -101,15 +198,56 @@ struct MeshApp: App {
 }
 
 enum MenuBarIcon {
-    /// SF Symbols never shipped `point.3.trianglepath.dotted`. That name resolved to
-    /// a nil image whenever the room was idle, the status item collapsed, and the
-    /// open panel followed it. The mark that does exist stays in the menu bar.
-    static let symbolName = "point.3.connected.trianglepath.dotted"
-
     static func image() -> NSImage? {
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Mesh")?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-        image?.isTemplate = true
+        let points: CGFloat = 18
+        let scale = NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+        let pixels = Int((points * scale).rounded())
+        guard pixels > 0,
+              let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixels,
+                pixelsHigh: pixels,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else {
+            return nil
+        }
+        rep.size = NSSize(width: points, height: points)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.shouldAntialias = true
+        context.cgContext.scaleBy(x: scale, y: scale)
+        NSColor.black.set()
+
+        let top = NSPoint(x: 9, y: 16)
+        let left = NSPoint(x: 2.5, y: 3.5)
+        let right = NSPoint(x: 15.5, y: 3.5)
+        let connections = NSBezierPath()
+        connections.move(to: top)
+        connections.line(to: left)
+        connections.line(to: right)
+        connections.close()
+        connections.lineWidth = 1.6
+        connections.lineCapStyle = .round
+        connections.lineJoinStyle = .round
+        connections.setLineDash([1.2, 2.2], count: 2, phase: 0)
+        connections.stroke()
+
+        for point in [top, left, right] {
+            NSBezierPath(
+                ovalIn: NSRect(x: point.x - 1.7, y: point.y - 1.7, width: 3.4, height: 3.4)
+            ).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: NSSize(width: points, height: points))
+        image.addRepresentation(rep)
+        image.isTemplate = true
         return image
     }
 }
@@ -205,3 +343,105 @@ final class PopoverAnchor: NSObject {
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 }
+
+#else
+import AVFoundation
+import SwiftUI
+import UIKit
+
+@main
+struct MeshApp: App {
+    @StateObject private var model = MeshModel()
+
+    var body: some Scene {
+        WindowGroup {
+            MeshIOSRoot(model: model)
+        }
+    }
+}
+
+private struct MeshIOSRoot: View {
+    @ObservedObject var model: MeshModel
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var hasBeenActive = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                MeshPanel(model: model)
+                    .padding(.vertical, 12)
+                    .frame(width: proxy.size.width)
+            }
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .onAppear {
+            MeshKeepAlive.shared.start()
+            model.start()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            MeshKeepAlive.shared.start()
+            if hasBeenActive {
+                model.noteForeground()
+            }
+            hasBeenActive = true
+        }
+    }
+}
+
+/// iOS suspends a silent app. An inaudible playback session is what keeps the
+/// MIDI ports and the room connection alive with the screen locked.
+final class MeshKeepAlive {
+    static let shared = MeshKeepAlive()
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private var started = false
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self?.start()
+        }
+    }
+
+    func start() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            return
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
+        if started {
+            if !engine.isRunning {
+                try? engine.start()
+            }
+            if !player.isPlaying {
+                player.play()
+            }
+            return
+        }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_410) else { return }
+        buffer.frameLength = 4_410
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = 0
+        player.scheduleBuffer(buffer, at: nil, options: .loops)
+        started = true
+        do {
+            try engine.start()
+        } catch {
+            return
+        }
+        player.play()
+    }
+}
+#endif

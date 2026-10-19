@@ -1,9 +1,13 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 
 struct MeshPanel: View {
     @ObservedObject var model: MeshModel
+    #if os(macOS) && !APPSTORE
     @StateObject private var updates = AppUpdateController()
+    #endif
     @State private var editingRooms = false
     @State private var drafts: [String: String] = [:]
     @State private var newRoomName = ""
@@ -27,8 +31,12 @@ struct MeshPanel: View {
         .frame(width: 360)
         .fixedSize(horizontal: true, vertical: true)
         .background(Theme.background)
+        #if os(macOS)
         .background(WindowBackground(color: Theme.nsBackground))
+        #endif
+        #if os(macOS) && !APPSTORE
         .onAppear { updates.refreshOnOpen() }
+        #endif
     }
 
     private var header: some View {
@@ -67,7 +75,7 @@ struct MeshPanel: View {
                 .foregroundStyle(.white)
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("THIS MAC")
+                    Text(model.localKind)
                         .font(Theme.medium(10))
                         .tracking(1.2)
                         .foregroundStyle(Theme.faint)
@@ -105,7 +113,7 @@ struct MeshPanel: View {
                 roomList
             }
 
-            Text("Macs in different rooms never share MIDI.")
+            Text("Devices in different rooms never share MIDI.")
                 .font(Theme.body(12))
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -229,7 +237,7 @@ struct MeshPanel: View {
                 .foregroundStyle(Theme.faint)
 
             if model.peers.isEmpty {
-                Text("Other Macs in \(model.roomName) will show up here and stay connected.")
+                Text("Other devices in \(model.roomName) will show up here and stay connected.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -253,6 +261,7 @@ struct MeshPanel: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
             Toggle(isOn: Binding(
                 get: { model.launchAtLogin },
                 set: { model.setLaunchAtLogin($0) }
@@ -270,6 +279,7 @@ struct MeshPanel: View {
                     .foregroundStyle(Theme.yellow)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            #endif
 
             HStack(spacing: 10) {
                 Button(action: model.reconnect) {
@@ -289,18 +299,30 @@ struct MeshPanel: View {
                 }
                 .buttonStyle(.plain)
 
+                #if os(macOS)
                 Button("Quit") {
                     NSApp.terminate(nil)
                 }
                 .font(Theme.body(13))
                 .foregroundStyle(Theme.muted)
                 .buttonStyle(.plain)
+                #endif
             }
 
+            #if os(iOS)
+            Text("Allow Local Network when iOS asks. Mesh stays in the room while the screen is locked.")
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            #endif
+
+            #if os(macOS) && !APPSTORE
             updateSection
+            #endif
         }
     }
 
+    #if os(macOS) && !APPSTORE
     private var updateSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(updates.statusText)
@@ -343,6 +365,7 @@ struct MeshPanel: View {
             return Color(red: 0.86, green: 0.28, blue: 0.28)
         }
     }
+    #endif
 }
 
 private struct RoomChoice: View {

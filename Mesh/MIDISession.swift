@@ -54,6 +54,7 @@ final class MIDISession {
     private var timer: DispatchSourceTimer?
     private var nextEvent: UInt32 = 1
     private var seenEvents: [UInt64] = []
+    private var lastMIDI = Date.distantPast
     private var lastDirectory = Date.distantPast
     /// Tests can turn this off to prove MIDI still crosses a missing edge.
     var dialPeersLearnedFromNeighbors = true
@@ -150,22 +151,36 @@ final class MIDISession {
     func broadcast(_ midiData: Data) {
         guard !midiData.isEmpty else { return }
         onQueue {
+            let now = Date()
+            // The first cue after the room has been quiet is the datagram a
+            // sleeping radio drops. Send that one again. Same event id, so
+            // the other Mac plays it once.
+            let opening = now.timeIntervalSince(self.lastMIDI) >= 1
+            self.lastMIDI = now
             let event = self.nextEvent
             self.nextEvent &+= 1
             if self.nextEvent == 0 { self.nextEvent = 1 }
             self.remember(ssrc: self.ssrc, event: event)
-            for key in self.links.keys {
-                guard self.links[key]?.phase == .connected else { continue }
-                self.links[key]?.sequence &+= 1
-                guard let link = self.links[key] else { continue }
-                let packet = AppleMIDI.encodeMIDI(
-                    sequence: link.sequence,
-                    timestamp: event,
-                    ssrc: self.ssrc,
-                    midi: midiData
-                )
-                self.midi.send(packet, to: link.address.withPort(link.address.port &+ 1))
+            self.fanout(midiData, event: event)
+            guard opening else { return }
+            self.queue.asyncAfter(deadline: .now() + 0.03) {
+                self.fanout(midiData, event: event)
             }
+        }
+    }
+
+    private func fanout(_ midiData: Data, event: UInt32) {
+        for key in links.keys {
+            guard links[key]?.phase == .connected else { continue }
+            links[key]?.sequence &+= 1
+            guard let link = links[key] else { continue }
+            let packet = AppleMIDI.encodeMIDI(
+                sequence: link.sequence,
+                timestamp: event,
+                ssrc: ssrc,
+                midi: midiData
+            )
+            midi.send(packet, to: link.address.withPort(link.address.port &+ 1))
         }
     }
 
