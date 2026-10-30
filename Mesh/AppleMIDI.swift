@@ -39,6 +39,14 @@ enum AppleMIDI {
         case synchronization = 0x434B
         case feedback = 0x5253
         case directory = 0x4D44
+        case roles = 0x524C
+    }
+
+    struct CueRole: Equatable {
+        var uuid: String
+        var ssrc: UInt32
+        var sends: Bool
+        var receives: Bool
     }
 
     struct DirectoryEntry: Equatable {
@@ -77,6 +85,7 @@ enum AppleMIDI {
         case feedback(ssrc: UInt32, sequence: UInt16)
         case midi(MIDIPayload)
         case directory(ssrc: UInt32, peers: [DirectoryEntry])
+        case roles([CueRole])
     }
 
     static func encodeDirectory(ssrc: UInt32, peers: [DirectoryEntry]) -> Data {
@@ -90,6 +99,21 @@ enum AppleMIDI {
             data.appendBE(peer.port)
             appendCString(&data, peer.uuid)
             appendCString(&data, peer.name)
+        }
+        return data
+    }
+
+    static func encodeRoles(_ roles: [CueRole]) -> Data {
+        var data = Data()
+        data.appendBE(signature)
+        data.appendBE(Command.roles.rawValue)
+        for role in roles.prefix(16) {
+            appendCString(&data, String(role.uuid.prefix(80)))
+            data.appendBE(role.ssrc)
+            var flags: UInt8 = 0
+            if role.sends { flags |= 0x01 }
+            if role.receives { flags |= 0x02 }
+            data.append(flags)
         }
         return data
     }
@@ -151,9 +175,30 @@ enum AppleMIDI {
             return decodeFeedback(data)
         case .directory:
             return decodeDirectory(data).map { Packet.directory(ssrc: $0.ssrc, peers: $0.peers) }
+        case .roles:
+            return decodeRoles(data).map(Packet.roles)
         default:
             return decodeExchange(data, command: command).map(Packet.exchange)
         }
+    }
+
+    private static func decodeRoles(_ data: Data) -> [CueRole]? {
+        var offset = 4
+        var roles: [CueRole] = []
+        while offset < data.count {
+            guard let uuid = readCString(data, &offset), let ssrc: UInt32 = readBE(data, offset) else { return nil }
+            offset += 4
+            guard offset < data.count else { return nil }
+            let flags = data[offset]
+            offset += 1
+            roles.append(CueRole(
+                uuid: uuid,
+                ssrc: ssrc,
+                sends: flags & 0x01 != 0,
+                receives: flags & 0x02 != 0
+            ))
+        }
+        return roles
     }
 
     private static func decodeDirectory(_ data: Data) -> (ssrc: UInt32, peers: [DirectoryEntry])? {

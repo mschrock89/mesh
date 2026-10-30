@@ -14,14 +14,19 @@ data class DiscoveredPeer(
     val uuid: String,
     val name: String,
     val address: UdpAddress,
-    val addresses: List<UdpAddress> = emptyList()
+    val addresses: List<UdpAddress> = emptyList(),
+    val sends: Boolean = true,
+    val receives: Boolean = true
 )
 
 data class PeerSnapshot(
     val id: String,
     val name: String,
     val status: Status,
-    val via: String?
+    val via: String?,
+    val uuid: String = "",
+    val sends: Boolean = true,
+    val receives: Boolean = true
 ) {
     enum class Status {
         Waiting,
@@ -44,12 +49,14 @@ class MidiSession(
     localUUID: String,
     val control: UdpSocket,
     val midi: UdpSocket,
-    roomID: String = MeshRoom.DEFAULT_ID
+    roomID: String = MeshRoom.DEFAULT_ID,
+    initialPolicy: CuePolicy = CuePolicy()
 ) {
     val localUUID: String = localUUID.lowercase()
     val ssrc: UInt = randomUInt()
     var onMIDI: ((ByteArray) -> Unit)? = null
     var onChange: ((List<PeerSnapshot>) -> Unit)? = null
+    private var policy = initialPolicy
 
     /** Tests can turn this off to prove MIDI still crosses a missing edge. */
     var dialPeersLearnedFromNeighbors: Boolean = true
@@ -64,6 +71,8 @@ class MidiSession(
     private var lastMidiAt = 0L
     private var lastDirectory = 0L
     private var roomID: String = MeshRoom.cleanedID(roomID) ?: MeshRoom.DEFAULT_ID
+    private val origins = HashMap<UInt, CueOrigin>()
+    private val echoes = ArrayDeque<Pair<ByteArray, Long>>()
     private val timer = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "mesh.session.timer").apply { isDaemon = true }
     }
@@ -122,12 +131,18 @@ class MidiSession(
                     if (learnedIdentity && current.phase != Phase.Connected && !current.controlAccepted && !current.midiAccepted) {
                         current.weInitiate = initiates(uuid, item.name)
                     }
+                    current.announcedSends = item.sends
+                    current.announcedReceives = item.receives
+                    rememberOrigin(current, override = true)
                     store(current, key)
                     seen.remove(key)
                     seen.add(current.address.key)
                 } else {
                     val link = Link.make(item, uuid, initiates(uuid, item.name))
                     link.candidates = candidates.toMutableList()
+                    link.announcedSends = item.sends
+                    link.announcedReceives = item.receives
+                    rememberOrigin(link, override = true)
                     links[link.address.key] = link
                     seen.add(link.address.key)
                 }
@@ -143,9 +158,18 @@ class MidiSession(
         }
     }
 
-    fun broadcast(midiData: ByteArray) {
-        if (midiData.isEmpty()) return
+    fun setPolicy(next: CuePolicy) {
         queue.async {
+            policy = next
+            lastDirectory = 0L
+        }
+    }
+
+    fun broadcast(midiData: ByteArray) {
+        val audible = CueBytes.audible(midiData)
+        if (audible.isEmpty()) return
+        queue.async {
+            if (!policy.sends || isEcho(audible)) return@async
             val now = System.currentTimeMillis()
             // The first cue after a quiet stretch is the datagram a sleeping
             // radio drops. Send that one again with the same event id so the
@@ -156,9 +180,9 @@ class MidiSession(
             nextEvent += 1u
             if (nextEvent == 0u) nextEvent = 1u
             remember(ssrc, event)
-            sendMidi(midiData, event)
+            sendMidi(audible, event)
             if (!opening) return@async
-            val copy = midiData.copyOf()
+            val copy = audible.copyOf()
             try {
                 timer.schedule({
                     try {
@@ -174,7 +198,7 @@ class MidiSession(
     private fun sendMidi(midiData: ByteArray, event: UInt) {
         for (key in links.keys.toList()) {
             val link = links[key] ?: continue
-            if (link.phase != Phase.Connected) continue
+            if (link.phase != Phase.Connected || !mayDeliver(link)) continue
             link.sequence = (link.sequence + 1) and 0xFFFF
             val packet = AppleMidi.encodeMidi(link.sequence, event, ssrc, midiData)
             midi.send(packet, link.address.withPort((link.address.port + 1) and 0xFFFF))
@@ -345,6 +369,7 @@ class MidiSession(
             is AppleMidi.Packet.Midi -> if (midiPort) handleMIDI(packet.payload, from)
             is AppleMidi.Packet.Feedback -> touch(from, midiPort)
             is AppleMidi.Packet.Directory -> if (!midiPort) handleDirectory(packet.peers, from)
+            is AppleMidi.Packet.Roles -> if (!midiPort) handleRoles(packet.roles, from)
         }
     }
 
@@ -359,6 +384,8 @@ class MidiSession(
         link.lastHeard = System.currentTimeMillis()
         link.missingSince = null
         if (message.name.isNotEmpty()) link.name = message.name
+        link.remoteSsrc = message.ssrc
+        rememberOrigin(link, override = true)
         val ourInviteIsWinning = link.weInitiate &&
             link.phase == Phase.InvitingControl &&
             link.token != 0u &&
@@ -390,6 +417,8 @@ class MidiSession(
         val link = links[controlAddress.key] ?: return
         if (!link.weInitiate || message.token != link.token) return
         link.lastHeard = System.currentTimeMillis()
+        link.remoteSsrc = message.ssrc
+        rememberOrigin(link, override = true)
         if (!midiPort && link.phase == Phase.InvitingControl) {
             link.phase = Phase.InvitingMidi
             link.attempts = 0
@@ -408,6 +437,8 @@ class MidiSession(
         val key = from.withPort((from.port - 1) and 0xFFFF).key
         val link = links[key] ?: return
         link.lastHeard = System.currentTimeMillis()
+        link.remoteSsrc = sync.ssrc
+        rememberOrigin(link, override = true)
         val now = AppleMidiClock.now()
         when (sync.count) {
             0 -> sendSync(link, 1, sync.timestamp1, now, 0)
@@ -426,16 +457,41 @@ class MidiSession(
         if (link.phase != Phase.Connected) return
         link.lastHeard = System.currentTimeMillis()
         if (payload.ssrc == ssrc || payload.midi.isEmpty()) return
+        val audible = CueBytes.audible(payload.midi)
+        if (audible.isEmpty()) return
         if (!remember(payload.ssrc, payload.timestamp)) return
-        onMIDI?.invoke(payload.midi)
+        val origin = origins[payload.ssrc]
+        val senderAllows = origin?.sends ?: true
+        val accepted = origin?.let { policy.accepts(it.uuid) } ?: true
+        if (policy.receives && senderAllows && accepted) {
+            rememberEcho(audible)
+            onMIDI?.invoke(audible)
+        }
+        if (!senderAllows) return
         for (other in links.keys.toList()) {
             if (other == key) continue
             val hop = links[other] ?: continue
-            if (hop.phase != Phase.Connected) continue
+            if (hop.phase != Phase.Connected || !mayDeliver(hop)) continue
             hop.sequence = (hop.sequence + 1) and 0xFFFF
-            val packet = AppleMidi.encodeMidi(hop.sequence, payload.timestamp, payload.ssrc, payload.midi)
+            val packet = AppleMidi.encodeMidi(hop.sequence, payload.timestamp, payload.ssrc, audible)
             midi.send(packet, hop.address.withPort((hop.address.port + 1) and 0xFFFF))
         }
+    }
+
+    private fun handleRoles(roles: List<AppleMidi.CueRole>, from: UdpAddress) {
+        val sender = links[from.key]
+        for (role in roles) {
+            val uuid = role.uuid.lowercase()
+            val aboutSender = uuid.isNotEmpty() && uuid == sender?.uuid?.lowercase()
+            rememberOrigin(role.ssrc, uuid, role.sends, role.receives, aboutSender)
+            if (!aboutSender) continue
+            val key = links.entries.firstOrNull { it.value.uuid.lowercase() == uuid }?.key ?: continue
+            val link = links[key] ?: continue
+            link.remoteSsrc = role.ssrc
+            link.announcedSends = role.sends
+            link.announcedReceives = role.receives
+        }
+        publish()
     }
 
     private fun handleDirectory(entries: List<AppleMidi.DirectoryEntry>, from: UdpAddress) {
@@ -529,8 +585,40 @@ class MidiSession(
         val entries = connected.map {
             AppleMidi.DirectoryEntry(it.address.ip, it.address.port, it.uuid, it.name)
         }
+        val roles = mutableListOf(AppleMidi.CueRole(localUUID, ssrc, policy.sends, policy.receives))
+        for (link in connected) {
+            if (link.remoteSsrc == 0u || link.uuid.isEmpty()) continue
+            roles.add(AppleMidi.CueRole(link.uuid, link.remoteSsrc, link.announcedSends, link.announcedReceives))
+        }
+        val rolesPacket = AppleMidi.encodeRoles(roles)
         val packet = AppleMidi.encodeDirectory(ssrc, entries)
-        for (link in connected) control.send(packet, link.address)
+        for (link in connected) {
+            control.send(rolesPacket, link.address)
+            control.send(packet, link.address)
+        }
+    }
+
+    private fun mayDeliver(link: Link): Boolean = link.announcedReceives && policy.delivers(link.uuid)
+
+    private fun rememberOrigin(link: Link, override: Boolean) {
+        rememberOrigin(link.remoteSsrc, link.uuid, link.announcedSends, link.announcedReceives, override)
+    }
+
+    private fun rememberOrigin(ssrc: UInt, uuid: String, sends: Boolean, receives: Boolean, override: Boolean) {
+        if (ssrc == 0u || ssrc == this.ssrc) return
+        if (!override && origins.containsKey(ssrc)) return
+        origins[ssrc] = CueOrigin(uuid.lowercase(), sends, receives)
+    }
+
+    private fun rememberEcho(data: ByteArray) {
+        val now = System.nanoTime()
+        while (echoes.isNotEmpty() && now - echoes.first().second > 250_000_000L) echoes.removeFirst()
+        echoes.addLast(data.copyOf() to now)
+    }
+
+    private fun isEcho(data: ByteArray): Boolean {
+        val now = System.nanoTime()
+        return echoes.any { it.first.contentEquals(data) && now - it.second <= 250_000_000L }
     }
 
     private fun store(link: Link, replacing: String) {
@@ -591,7 +679,10 @@ class MidiSession(
                 id = key,
                 name = link.name.ifEmpty { "Mac" },
                 status = link.status,
-                via = if (link.status == PeerSnapshot.Status.Bridged) link.via else null
+                via = if (link.status == PeerSnapshot.Status.Bridged) link.via else null,
+                uuid = link.uuid,
+                sends = link.announcedSends,
+                receives = link.announcedReceives
             )
         }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
     }
@@ -637,7 +728,10 @@ private class Link(
     var candidates: MutableList<UdpAddress> = mutableListOf(),
     var opened: Long = System.currentTimeMillis(),
     var via: String? = null,
-    var viaSeen: Long? = null
+    var viaSeen: Long? = null,
+    var remoteSsrc: UInt = 0u,
+    var announcedSends: Boolean = true,
+    var announcedReceives: Boolean = true
 ) {
     val status: PeerSnapshot.Status
         get() = when {

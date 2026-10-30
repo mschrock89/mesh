@@ -135,6 +135,94 @@ class ProtocolTest {
     }
 
     @Test
+    fun `port chatter is not a cue`() {
+        assertArrayEquals(byteArrayOf(), CueBytes.audible(byteArrayOf(0xFE.toByte())))
+        assertArrayEquals(byteArrayOf(), CueBytes.audible(byteArrayOf(0xF8.toByte(), 0xF8.toByte())))
+        assertArrayEquals(byteArrayOf(), CueBytes.audible(byteArrayOf(0xB0.toByte(), 0x7B, 0)))
+        val note = byteArrayOf(0x90.toByte(), 60, 100)
+        assertArrayEquals(note, CueBytes.audible(byteArrayOf(0x90.toByte(), 60, 100, 0xFE.toByte())))
+    }
+
+    @Test
+    fun `a device that is not sending does not deliver cues`() {
+        val (left, right, leftAddress, rightAddress) = openEnds()
+        val received = Received()
+        right.onMIDI = { received.add(it) }
+        left.setPolicy(CuePolicy(sends = false))
+        left.start()
+        right.start()
+        try {
+            left.updateDiscovered(listOf(DiscoveredPeer(right.localUUID, "Mac B", rightAddress)))
+            right.updateDiscovered(listOf(DiscoveredPeer(left.localUUID, "Mac A", leftAddress)))
+            assertTrue(waitUntil(6.0) {
+                left.snapshots().any { it.status == PeerSnapshot.Status.Connected } &&
+                    right.snapshots().any { it.status == PeerSnapshot.Status.Connected }
+            })
+            val note = byteArrayOf(0x90.toByte(), 61, 80)
+            left.broadcast(note)
+            Thread.sleep(400)
+            assertEquals(0, received.count(note))
+        } finally {
+            left.stop()
+            right.stop()
+        }
+    }
+
+    @Test
+    fun `a receiver can ignore one sender`() {
+        val (left, right, leftAddress, rightAddress) = openEnds()
+        val received = Received()
+        right.onMIDI = { received.add(it) }
+        left.start()
+        right.start()
+        try {
+            left.updateDiscovered(listOf(DiscoveredPeer(right.localUUID, "Mac B", rightAddress)))
+            right.updateDiscovered(listOf(DiscoveredPeer(left.localUUID, "Mac A", leftAddress)))
+            assertTrue(waitUntil(6.0) {
+                left.snapshots().any { it.status == PeerSnapshot.Status.Connected } &&
+                    right.snapshots().any { it.status == PeerSnapshot.Status.Connected }
+            })
+            right.setPolicy(CuePolicy(blockedSources = setOf(left.localUUID)))
+            val note = byteArrayOf(0x90.toByte(), 62, 80)
+            left.broadcast(note)
+            Thread.sleep(400)
+            assertEquals(0, received.count(note))
+        } finally {
+            left.stop()
+            right.stop()
+        }
+    }
+
+    @Test
+    fun `played midi is not sent back out`() {
+        val (left, right, leftAddress, rightAddress) = openEnds()
+        val received = Received()
+        left.onMIDI = { received.addReturn(it) }
+        right.onMIDI = {
+            received.add(it)
+            right.broadcast(it)
+        }
+        left.start()
+        right.start()
+        try {
+            left.updateDiscovered(listOf(DiscoveredPeer(right.localUUID, "Mac B", rightAddress)))
+            right.updateDiscovered(listOf(DiscoveredPeer(left.localUUID, "Mac A", leftAddress)))
+            assertTrue(waitUntil(6.0) {
+                left.snapshots().any { it.status == PeerSnapshot.Status.Connected } &&
+                    right.snapshots().any { it.status == PeerSnapshot.Status.Connected }
+            })
+            val note = byteArrayOf(0x90.toByte(), 63, 90)
+            left.broadcast(note)
+            assertTrue(waitUntil(2.0) { received.count(note) == 1 })
+            Thread.sleep(400)
+            assertEquals(0, received.countReturn(note))
+        } finally {
+            left.stop()
+            right.stop()
+        }
+    }
+
+    @Test
     fun `two devices in one room exchange midi`() {
         val (left, right, leftAddress, rightAddress) = openEnds()
         val received = Received()
@@ -306,6 +394,7 @@ private class Received {
     fun contains(data: ByteArray) = synchronized(this) { inbound.any { it.contentEquals(data) } }
     fun containsReturn(data: ByteArray) = synchronized(this) { returned.any { it.contentEquals(data) } }
     fun count(data: ByteArray) = synchronized(this) { inbound.count { it.contentEquals(data) } }
+    fun countReturn(data: ByteArray) = synchronized(this) { returned.count { it.contentEquals(data) } }
 }
 
 private data class Ends(

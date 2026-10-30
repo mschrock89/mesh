@@ -16,6 +16,7 @@ final class MeshModel: ObservableObject {
     @Published private(set) var rooms: [MeshRoom] = []
     @Published private(set) var roomID: String = MeshRoom.defaultID
     @Published private(set) var elsewhere: [MeshRoom] = []
+    @Published private(set) var cuePolicy: CuePolicy
 
     var roomName: String {
         rooms.first { $0.id == roomID }?.name ?? MeshRoom.sanctuaries[0].name
@@ -31,6 +32,7 @@ final class MeshModel: ObservableObject {
 
     private let engine = MeshEngine()
     private let roomStore: RoomStore
+    private let cueStore: CueStore
     private var didStart = false
     #if os(macOS)
     private let loginDefaultsKey = "mesh.didApplyLoginDefault"
@@ -41,6 +43,9 @@ final class MeshModel: ObservableObject {
         roomStore = store
         rooms = store.rooms
         roomID = store.selectedID
+        let cues = CueStore()
+        cueStore = cues
+        cuePolicy = cues.policy
     }
 
     func start() {
@@ -56,7 +61,7 @@ final class MeshModel: ObservableObject {
                 self?.applyAdvertised(announced)
             }
         }
-        engine.start(room: roomStore.selected, catalog: roomStore.rooms)
+        engine.start(room: roomStore.selected, catalog: roomStore.rooms, cues: cueStore.policy)
         #if os(macOS)
         if !UserDefaults.standard.bool(forKey: loginDefaultsKey) {
             setLaunchAtLogin(true)
@@ -106,6 +111,30 @@ final class MeshModel: ObservableObject {
 
     func canDeleteRoom(_ id: String) -> Bool {
         roomStore.canDelete(id)
+    }
+
+    func setSendsCues(_ on: Bool) {
+        cueStore.setSends(on)
+        cuePolicy = cueStore.policy
+        engine.setCues(cuePolicy)
+    }
+
+    func setReceivesCues(_ on: Bool) {
+        cueStore.setReceives(on)
+        cuePolicy = cueStore.policy
+        engine.setCues(cuePolicy)
+    }
+
+    func setAcceptsCues(_ on: Bool, from uuid: String) {
+        cueStore.setAccepts(on, from: uuid)
+        cuePolicy = cueStore.policy
+        engine.setCues(cuePolicy)
+    }
+
+    func setSendsCues(_ on: Bool, to uuid: String) {
+        cueStore.setDelivers(on, to: uuid)
+        cuePolicy = cueStore.policy
+        engine.setCues(cuePolicy)
     }
 
     func restoreRoom(_ id: String) {

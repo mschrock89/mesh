@@ -77,13 +77,15 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
             fields[item.key] = value
         }
         let room = MeshRoom.cleanedID(text["room"] ?? "") ?? ""
+        let sends = text["tx"] != "0"
+        let receives = text["rx"] != "0"
         guard !room.isEmpty else {
             resolved.removeValue(forKey: sender.name)
             emit()
             return
         }
         resolved[sender.name] = ResolvedService(
-            peer: DiscoveredPeer(uuid: uuid, name: sender.name, address: address, addresses: addresses),
+            peer: DiscoveredPeer(uuid: uuid, name: sender.name, address: address, addresses: addresses, sends: sends, receives: receives),
             roomID: room,
             announced: RoomCatalogTXT.announced(from: text)
         )
@@ -146,14 +148,18 @@ final class ServicePublisher: NSObject, NetServiceDelegate {
     private let uuid: String
     private var catalog: [MeshRoom]
     private var selected: MeshRoom
+    private var sendsCues: Bool
+    private var receivesCues: Bool
     private var retried = false
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "bonjour")
 
-    init(name: String, port: Int32, uuid: String, selected: MeshRoom, catalog: [MeshRoom]) {
+    init(name: String, port: Int32, uuid: String, selected: MeshRoom, catalog: [MeshRoom], sendsCues: Bool, receivesCues: Bool) {
         self.port = port
         self.uuid = uuid
         self.selected = selected
         self.catalog = catalog
+        self.sendsCues = sendsCues
+        self.receivesCues = receivesCues
         service = NetService(domain: "local.", type: PeerBrowser.serviceType, name: name, port: port)
         super.init()
         prepare(service)
@@ -162,6 +168,12 @@ final class ServicePublisher: NSObject, NetServiceDelegate {
     func update(selected: MeshRoom, catalog: [MeshRoom]) {
         self.selected = selected
         self.catalog = catalog
+        applyTXT(service)
+    }
+
+    func setCues(sends: Bool, receives: Bool) {
+        sendsCues = sends
+        receivesCues = receives
         applyTXT(service)
     }
 
@@ -197,6 +209,8 @@ final class ServicePublisher: NSObject, NetServiceDelegate {
     private func applyTXT(_ service: NetService) {
         var fields = RoomCatalogTXT.fields(selected: selected, rooms: catalog).mapValues { Data($0.utf8) }
         fields["id"] = Data(uuid.utf8)
+        fields["tx"] = Data((sendsCues ? "1" : "0").utf8)
+        fields["rx"] = Data((receivesCues ? "1" : "0").utf8)
         service.setTXTRecord(NetService.data(fromTXTRecord: fields))
     }
 }

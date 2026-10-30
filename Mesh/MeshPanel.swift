@@ -22,6 +22,7 @@ struct MeshPanel: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 statusCard
+                cueCard
                 roomCard
                 peerCard
                 footer
@@ -95,6 +96,40 @@ struct MeshPanel: View {
                     .font(Theme.body(12))
                     .foregroundStyle(Color(red: 0.86, green: 0.28, blue: 0.28))
             }
+        }
+        .card()
+    }
+
+    private var cueCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CUES")
+                .font(Theme.medium(10))
+                .tracking(1.2)
+                .foregroundStyle(Theme.faint)
+            Toggle(isOn: Binding(
+                get: { model.cuePolicy.sends },
+                set: { model.setSendsCues($0) }
+            )) {
+                Text("Send cues")
+                    .font(Theme.body(14))
+                    .foregroundStyle(.white)
+            }
+            .toggleStyle(.switch)
+            .tint(Theme.blue)
+            Toggle(isOn: Binding(
+                get: { model.cuePolicy.receives },
+                set: { model.setReceivesCues($0) }
+            )) {
+                Text("Receive cues")
+                    .font(Theme.body(14))
+                    .foregroundStyle(.white)
+            }
+            .toggleStyle(.switch)
+            .tint(Theme.blue)
+            Text("Send lets other apps on this device put cues on the room. Receive plays room cues here. Accept and Send on each device choose who this one listens to and who it talks to.")
+                .font(Theme.body(12))
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .card()
     }
@@ -246,7 +281,13 @@ struct MeshPanel: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(model.peers) { peer in
-                            PeerRow(peer: peer)
+                            PeerRow(
+                                peer: peer,
+                                accept: model.cuePolicy.accepts(peer.uuid),
+                                send: model.cuePolicy.delivers(to: peer.uuid),
+                                onAccept: { model.setAcceptsCues($0, from: peer.uuid) },
+                                onSend: { model.setSendsCues($0, to: peer.uuid) }
+                            )
                             if peer.id != model.peers.last?.id {
                                 Divider().overlay(Theme.border)
                             }
@@ -433,32 +474,57 @@ private struct RoomChoice: View {
 
 private struct PeerRow: View {
     var peer: PeerSnapshot
+    var accept: Bool
+    var send: Bool
+    var onAccept: (Bool) -> Void
+    var onSend: (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-                .shadow(color: color.opacity(isLive ? 0.7 : 0), radius: 4)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(peer.name)
-                    .font(Theme.medium(14))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if peer.status == .bridged, let via = peer.via {
-                    Text("Through \(via)")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: color.opacity(isLive ? 0.7 : 0), radius: 4)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(peer.name)
+                        .font(Theme.medium(14))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if peer.status == .bridged, let via = peer.via {
+                        Text("Through \(via)")
+                            .font(Theme.body(11))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                Text(label)
+                    .font(Theme.body(12))
+                    .foregroundStyle(isLive ? Theme.yellow : Theme.muted)
+            }
+            if !peer.uuid.isEmpty {
+                HStack(spacing: 8) {
+                    CueChip(title: "Accept", on: accept) { onAccept(!accept) }
+                    CueChip(title: "Send", on: send) { onSend(!send) }
+                    Spacer(minLength: 0)
+                }
+                if !peer.sends || !peer.receives {
+                    Text(peerNote)
                         .font(Theme.body(11))
                         .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
             }
-            Spacer()
-            Text(label)
-                .font(Theme.body(12))
-                .foregroundStyle(isLive ? Theme.yellow : Theme.muted)
         }
         .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
+    }
+
+    private var peerNote: String {
+        if !peer.sends && !peer.receives { return "Send and Receive are off on this device" }
+        if !peer.sends { return "Send is off on this device" }
+        return "Receive is off on this device"
     }
 
     private var isLive: Bool {
@@ -479,6 +545,26 @@ private struct PeerRow: View {
         case .connecting: return Theme.blue
         case .waiting: return Color.white.opacity(0.35)
         }
+    }
+}
+
+private struct CueChip: View {
+    var title: String
+    var on: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.medium(11))
+                .foregroundStyle(on ? Theme.yellow : Theme.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background((on ? Theme.yellow : Color.white).opacity(on ? 0.16 : 0.06))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(on ? "on" : "off")")
     }
 }
 

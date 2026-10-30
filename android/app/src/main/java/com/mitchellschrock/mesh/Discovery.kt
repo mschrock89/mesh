@@ -35,6 +35,8 @@ class MeshDiscovery(
     private var roomID = MeshRoom.DEFAULT_ID
     private var selected = MeshRoom.sanctuaries[0]
     private var catalog = MeshRoom.sanctuaries
+    private var sendsCues = false
+    private var receivesCues = true
     private var instanceName = serviceName(localName)
 
     private val listener = object : ServiceListener {
@@ -71,6 +73,15 @@ class MeshDiscovery(
             this.selected = selected
             this.catalog = catalog
             if (!same) reregister()
+        }
+    }
+
+    fun setCues(sends: Boolean, receives: Boolean) {
+        io.execute {
+            val same = sendsCues == sends && receivesCues == receives
+            sendsCues = sends
+            receivesCues = receives
+            if (!same && browsers.isNotEmpty()) reregister()
         }
     }
 
@@ -121,6 +132,8 @@ class MeshDiscovery(
     private fun register(dns: JmDNS) {
         val props = HashMap<String, String>(RoomCatalogTXT.fields(selected, catalog))
         props["id"] = localUUID
+        props["tx"] = if (sendsCues) "1" else "0"
+        props["rx"] = if (receivesCues) "1" else "0"
         try {
             dns.registerService(serviceInfo(instanceName, props))
         } catch (_: Exception) {
@@ -160,7 +173,9 @@ class MeshDiscovery(
         val addresses = addresses(info)
         if (addresses.isEmpty()) return
         if (addresses.all { it.port == localPort && it.ip in LocalAddresses.ipv4() }) return
-        val peer = DiscoveredPeer(uuid, name, addresses.first(), addresses)
+        val sends = fields["tx"] != "0"
+        val receives = fields["rx"] != "0"
+        val peer = DiscoveredPeer(uuid, name, addresses.first(), addresses, sends, receives)
         synchronized(lock) {
             resolved[name] = ResolvedService(peer, room, RoomCatalogTXT.announced(fields))
         }
@@ -182,7 +197,7 @@ class MeshDiscovery(
                     .distinct()
                     .sortedBy { LocalAddresses.rank(it.ip) }
                 val sample = group.first().peer
-                DiscoveredPeer(sample.uuid, sample.name, addresses.first(), addresses)
+                DiscoveredPeer(sample.uuid, sample.name, addresses.first(), addresses, sample.sends, sample.receives)
             }
             val best = linkedMapOf<String, AnnouncedRoom>()
             for (item in resolved.values) {

@@ -92,6 +92,7 @@ fun MeshScreen(ui: MeshUi, updates: AppUpdateController) {
             ) {
                 Header(ui)
                 StatusCard(ui)
+                CueCard(ui)
                 RoomCard(
                     ui = ui,
                     editing = editing,
@@ -340,6 +341,32 @@ private fun RoomChoice(
 }
 
 @Composable
+private fun CueCard(ui: MeshUi) {
+    Column(Modifier.card(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextLine("CUES", 10, FontWeight.Medium, Faint, spacing = 1.2)
+        CueSwitch("Send cues", ui.sendsCues) { MeshHub.setSends(it) }
+        CueSwitch("Receive cues", ui.receivesCues) { MeshHub.setReceives(it) }
+        TextLine(
+            "Send lets other apps on this tablet put cues on the room. Receive plays room cues here. Accept and Send on each device choose who this one listens to and who it talks to.",
+            12,
+            FontWeight.Normal,
+            Muted
+        )
+    }
+}
+
+@Composable
+private fun CueSwitch(title: String, on: Boolean, toggle: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { toggle(!on) }.padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextLine(title, 14, FontWeight.Normal, Color.White, modifier = Modifier.weight(1f))
+        TextLine(if (on) "On" else "Off", 12, FontWeight.Medium, if (on) Yellow else Muted)
+    }
+}
+
+@Composable
 private fun PeerCard(ui: MeshUi) {
     val roomName = ui.rooms.firstOrNull { it.id == ui.roomID }?.name ?: "this room"
     Column(Modifier.card(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -354,7 +381,11 @@ private fun PeerCard(ui: MeshUi) {
             )
         } else {
             ui.peers.forEachIndexed { index, peer ->
-                PeerRow(peer)
+                PeerRow(
+                    peer = peer,
+                    accept = peer.uuid.isEmpty() || peer.uuid.lowercase() !in ui.blockedSources,
+                    send = peer.uuid.isEmpty() || peer.uuid.lowercase() !in ui.blockedDestinations
+                )
                 if (index != ui.peers.lastIndex) {
                     Box(Modifier.fillMaxWidth().height(1.dp).background(Border))
                 }
@@ -364,7 +395,7 @@ private fun PeerCard(ui: MeshUi) {
 }
 
 @Composable
-private fun PeerRow(peer: PeerSnapshot) {
+private fun PeerRow(peer: PeerSnapshot, accept: Boolean, send: Boolean) {
     val live = peer.status == PeerSnapshot.Status.Connected || peer.status == PeerSnapshot.Status.Bridged
     val color = when (peer.status) {
         PeerSnapshot.Status.Connected, PeerSnapshot.Status.Bridged -> Yellow
@@ -376,7 +407,8 @@ private fun PeerRow(peer: PeerSnapshot) {
         PeerSnapshot.Status.Connecting -> "Connecting"
         PeerSnapshot.Status.Waiting -> "Waiting"
     }
-    Row(Modifier.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.padding(vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(color))
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
@@ -387,6 +419,36 @@ private fun PeerRow(peer: PeerSnapshot) {
         }
         TextLine(label, 12, FontWeight.Normal, if (live) Yellow else Muted)
     }
+    if (peer.uuid.isNotEmpty()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CueChip("Accept", accept) { MeshHub.setAccepts(peer.uuid, !accept) }
+            CueChip("Send", send) { MeshHub.setDelivers(peer.uuid, !send) }
+        }
+        if (!peer.sends || !peer.receives) {
+            val note = when {
+                !peer.sends && !peer.receives -> "Send and Receive are off on this device"
+                !peer.sends -> "Send is off on this device"
+                else -> "Receive is off on this device"
+            }
+            TextLine(note, 11, FontWeight.Normal, Muted)
+        }
+    }
+    }
+}
+
+@Composable
+private fun CueChip(title: String, on: Boolean, toggle: () -> Unit) {
+    TextLine(
+        title,
+        11,
+        FontWeight.Medium,
+        if (on) Yellow else Muted,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(if (on) Yellow.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.06f))
+            .clickable(onClick = toggle)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    )
 }
 
 @Composable

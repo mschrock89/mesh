@@ -43,7 +43,7 @@ class MeshEngine(
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
-    fun start(room: MeshRoom, catalog: List<MeshRoom>) {
+    fun start(room: MeshRoom, catalog: List<MeshRoom>, cues: mesh.CuePolicy) {
         roomID = room.id
         holdRadio()
         val pair = try {
@@ -54,7 +54,7 @@ class MeshEngine(
         }
         control = pair.first
         midiSocket = pair.second
-        val session = MidiSession(localName, localUUID, pair.first, pair.second, room.id)
+        val session = MidiSession(localName, localUUID, pair.first, pair.second, room.id, cues)
         session.onMIDI = { data -> listener.onMidi(data) }
         session.onChange = { peers -> main.post { listener.onPeers(peers) } }
         session.start()
@@ -69,9 +69,15 @@ class MeshEngine(
             onPeers = { peers -> session.updateDiscovered(peers) },
             onRooms = { rooms -> main.post { listener.onRooms(rooms) } }
         )
+        discovery.setCues(cues.sends, cues.receives)
         discovery.start(room, catalog)
         this.discovery = discovery
         watchNetwork()
+    }
+
+    fun setCues(cues: mesh.CuePolicy) {
+        session?.setPolicy(cues)
+        discovery?.setCues(cues.sends, cues.receives)
     }
 
     fun advertise(room: MeshRoom, catalog: List<MeshRoom>) {

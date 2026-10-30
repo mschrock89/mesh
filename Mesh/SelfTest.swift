@@ -5,6 +5,7 @@ enum SelfTest {
     static func run() -> Bool {
         var failures: [String] = []
         failures += codecChecks()
+        failures += cueChecks()
         failures += roomChecks()
         #if !APPSTORE
         failures += updateChecks()
@@ -15,6 +16,9 @@ enum SelfTest {
         }
         if let changed = roomChangeCheck() {
             failures.append(changed)
+        }
+        if let gated = cueGateCheck() {
+            failures.append(gated)
         }
         if let handshake = handshakeCheck() {
             failures.append(handshake)
@@ -296,6 +300,55 @@ enum SelfTest {
         return failures
     }
     #endif
+
+    private static func cueChecks() -> [String] {
+        var failures: [String] = []
+        if !CueBytes.audible(Data([0xFE])).isEmpty || !CueBytes.audible(Data([0xB0, 0x7B, 0])).isEmpty {
+            failures.append("port chatter was treated as a cue")
+        }
+        let note = Data([0x90, 60, 100])
+        if CueBytes.audible(note + Data([0xFE])) != note {
+            failures.append("a note wrapped in active sensing was changed")
+        }
+        let role = AppleMIDI.CueRole(uuid: "abc", ssrc: 9, sends: false, receives: true)
+        guard case .roles(let roles) = AppleMIDI.decode(AppleMIDI.encodeRoles([role])) else {
+            return failures + ["cue roles did not decode"]
+        }
+        if roles.count != 1 || roles[0].uuid != "abc" || roles[0].ssrc != 9 || roles[0].sends || !roles[0].receives {
+            failures.append("cue roles did not round trip")
+        }
+        return failures
+    }
+
+    private static func cueGateCheck() -> String? {
+        guard let leftControl = try? UDPSocket(port: 0),
+              let leftMIDI = try? UDPSocket(port: leftControl.port &+ 1),
+              let rightControl = try? UDPSocket(port: 0),
+              let rightMIDI = try? UDPSocket(port: rightControl.port &+ 1),
+              let leftAddress = UDPAddress.ipv4("127.0.0.1", port: leftControl.port),
+              let rightAddress = UDPAddress.ipv4("127.0.0.1", port: rightControl.port) else {
+            return "could not open cue-gate ports"
+        }
+        let left = MIDISession(localName: "Mac A", localUUID: "00000000-0000-0000-0000-000000000001", control: leftControl, midi: leftMIDI, policy: CuePolicy(sends: false))
+        let right = MIDISession(localName: "Mac B", localUUID: "ffffffff-ffff-ffff-ffff-ffffffffffff", control: rightControl, midi: rightMIDI)
+        let received = Received()
+        right.onMIDI = { received.append($0) }
+        left.start()
+        right.start()
+        left.updateDiscovered([DiscoveredPeer(uuid: right.localUUID, name: "Mac B", address: rightAddress)])
+        right.updateDiscovered([DiscoveredPeer(uuid: left.localUUID, name: "Mac A", address: leftAddress)])
+        let connected = waitUntil(6) {
+            left.snapshots().contains { $0.status == .connected } && right.snapshots().contains { $0.status == .connected }
+        }
+        let note = Data([0x90, 61, 40])
+        left.broadcast(note)
+        _ = waitUntil(0.4) { false }
+        left.stop()
+        right.stop()
+        if !connected { return "cue gate peers did not connect (\(left.debugSummary()))" }
+        if received.contains(note) { return "a device with send off still delivered a cue" }
+        return nil
+    }
 
     private static func roomChecks() -> [String] {
         var failures: [String] = []

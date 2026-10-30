@@ -25,6 +25,7 @@ final class MeshEngine {
     private var roomID = MeshRoom.defaultID
     private var roomName = MeshRoom.sanctuaries[0].name
     private var roomRevision = MeshRoom.sanctuaries[0].revision
+    private var cuePolicy = CuePolicy()
     private var catalog = MeshRoom.sanctuaries
     private var control: UDPSocket?
     private var midiSocket: UDPSocket?
@@ -58,7 +59,8 @@ final class MeshEngine {
         }
     }
 
-    func start(room: MeshRoom, catalog: [MeshRoom]) {
+    func start(room: MeshRoom, catalog: [MeshRoom], cues: CuePolicy) {
+        cuePolicy = cues
         remember(room: room, catalog: catalog)
         start()
     }
@@ -112,7 +114,8 @@ final class MeshEngine {
             localUUID: localUUID,
             control: pair.0,
             midi: pair.1,
-            roomID: roomID
+            roomID: roomID,
+            policy: cuePolicy
         )
         session.onMIDI = { [weak self] data in
             self?.inject(data)
@@ -136,6 +139,12 @@ final class MeshEngine {
             self?.startDiscovery()
             self?.watchSystem()
         }
+    }
+
+    func setCues(_ policy: CuePolicy) {
+        cuePolicy = policy
+        session?.setPolicy(policy)
+        publisher?.setCues(sends: policy.sends, receives: policy.receives)
     }
 
     func reconnect() {
@@ -162,7 +171,9 @@ final class MeshEngine {
             port: Int32(control.port),
             uuid: localUUID,
             selected: MeshRoom(id: roomID, name: roomName, revision: roomRevision),
-            catalog: catalog
+            catalog: catalog,
+            sendsCues: cuePolicy.sends,
+            receivesCues: cuePolicy.receives
         )
         publisher.publish()
         self.publisher = publisher

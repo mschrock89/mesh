@@ -23,7 +23,8 @@ object AppleMidi {
         Exit(0x4259),
         Synchronization(0x434B),
         Feedback(0x5253),
-        Directory(0x4D44);
+        Directory(0x4D44),
+        Roles(0x524C);
 
         companion object {
             fun from(code: Int): Command? = entries.firstOrNull { it.code == code }
@@ -31,6 +32,8 @@ object AppleMidi {
     }
 
     data class DirectoryEntry(val ip: Ipv4, val port: Int, val uuid: String, val name: String)
+
+    data class CueRole(val uuid: String, val ssrc: UInt, val sends: Boolean, val receives: Boolean)
 
     data class Exchange(
         val command: Command,
@@ -61,6 +64,7 @@ object AppleMidi {
         class Feedback(val ssrc: UInt, val sequence: Int) : Packet()
         class Midi(val payload: MidiPayload) : Packet()
         class Directory(val ssrc: UInt, val peers: List<DirectoryEntry>) : Packet()
+        class Roles(val roles: List<CueRole>) : Packet()
     }
 
     fun encodeDirectory(ssrc: UInt, peers: List<DirectoryEntry>): ByteArray {
@@ -73,6 +77,21 @@ object AppleMidi {
             out.u16(peer.port)
             out.cstr(peer.uuid)
             out.cstr(peer.name)
+        }
+        return out.bytes()
+    }
+
+    fun encodeRoles(roles: List<CueRole>): ByteArray {
+        val out = Writer()
+        out.u16(SIGNATURE)
+        out.u16(Command.Roles.code)
+        for (role in roles.take(16)) {
+            out.cstr(utf8Prefix(role.uuid, 80))
+            out.u32(role.ssrc)
+            var flags = 0
+            if (role.sends) flags = flags or 0x01
+            if (role.receives) flags = flags or 0x02
+            out.u8(flags)
         }
         return out.bytes()
     }
@@ -131,8 +150,26 @@ object AppleMidi {
             Command.Synchronization -> decodeSync(data)?.let(Packet::SyncPacket)
             Command.Feedback -> decodeFeedback(data)
             Command.Directory -> decodeDirectory(data)?.let { Packet.Directory(it.first, it.second) }
+            Command.Roles -> decodeRoles(data)?.let(Packet::Roles)
             else -> decodeExchange(data, command)?.let(Packet::ExchangePacket)
         }
+    }
+
+    private fun decodeRoles(data: ByteArray): List<CueRole>? {
+        var offset = 4
+        val roles = mutableListOf<CueRole>()
+        while (offset < data.size) {
+            val cursor = intArrayOf(offset)
+            val uuid = readCString(data, cursor) ?: return null
+            offset = cursor[0]
+            val ssrc = u32(data, offset) ?: return null
+            offset += 4
+            if (offset >= data.size) return null
+            val flags = data[offset].toInt() and 0xFF
+            offset += 1
+            roles.add(CueRole(uuid, ssrc, flags and 0x01 != 0, flags and 0x02 != 0))
+        }
+        return roles
     }
 
     private fun decodeDirectory(data: ByteArray): Pair<UInt, List<DirectoryEntry>>? {

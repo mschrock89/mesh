@@ -6,12 +6,16 @@ struct DiscoveredPeer: Equatable {
     var name: String
     var address: UDPAddress
     var addresses: [UDPAddress]
+    var sends: Bool
+    var receives: Bool
 
-    init(uuid: String, name: String, address: UDPAddress, addresses: [UDPAddress] = []) {
+    init(uuid: String, name: String, address: UDPAddress, addresses: [UDPAddress] = [], sends: Bool = true, receives: Bool = true) {
         self.uuid = uuid
         self.name = name
         self.address = address
         self.addresses = addresses.isEmpty ? [address] : addresses
+        self.sends = sends
+        self.receives = receives
     }
 }
 
@@ -20,6 +24,9 @@ struct PeerSnapshot: Identifiable, Equatable {
     var name: String
     var status: Status
     var via: String?
+    var uuid: String = ""
+    var sends: Bool = true
+    var receives: Bool = true
 
     enum Status: String, Equatable {
         case waiting
@@ -45,6 +52,7 @@ final class MIDISession {
     let midi: UDPSocket
     var onMIDI: ((Data) -> Void)?
     var onChange: (([PeerSnapshot]) -> Void)?
+    private var policy: CuePolicy
 
     private let queue: DispatchQueue
     private let queueKey: DispatchSpecificKey<UInt8>
@@ -61,10 +69,13 @@ final class MIDISession {
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "session")
 
     private var roomID: String
+    private var origins: [UInt32: CueOrigin] = [:]
+    private var echoes: [(Data, Date)] = []
 
-    init(localName: String, localUUID: String, control: UDPSocket, midi: UDPSocket, roomID: String = MeshRoom.defaultID) {
+    init(localName: String, localUUID: String, control: UDPSocket, midi: UDPSocket, roomID: String = MeshRoom.defaultID, policy: CuePolicy = CuePolicy()) {
         self.localName = localName
         self.localUUID = localUUID.lowercased()
+        self.policy = policy
         self.roomID = MeshRoom.cleanedID(roomID) ?? MeshRoom.defaultID
         self.ssrc = UInt32.random(in: 1..<UInt32.max)
         self.control = control
@@ -127,12 +138,18 @@ final class MIDISession {
                     if learnedIdentity && link.phase != .connected && !link.controlAccepted && !link.midiAccepted {
                         link.weInitiate = self.initiates(uuid: uuid, name: item.name)
                     }
+                    link.announcedSends = item.sends
+                    link.announcedReceives = item.receives
+                    self.rememberOrigin(link, override: true)
                     self.store(link, replacing: key)
                     seen.remove(key)
                     seen.insert(link.address.key)
                 } else {
                     var link = Link.make(item, uuid: uuid, initiate: self.initiates(uuid: uuid, name: item.name))
                     link.candidates = candidates
+                    link.announcedSends = item.sends
+                    link.announcedReceives = item.receives
+                    self.rememberOrigin(link, override: true)
                     self.links[link.address.key] = link
                     seen.insert(link.address.key)
                 }
@@ -148,9 +165,18 @@ final class MIDISession {
         }
     }
 
-    func broadcast(_ midiData: Data) {
-        guard !midiData.isEmpty else { return }
+    func setPolicy(_ policy: CuePolicy) {
         onQueue {
+            self.policy = policy
+            self.lastDirectory = .distantPast
+        }
+    }
+
+    func broadcast(_ midiData: Data) {
+        let audible = CueBytes.audible(midiData)
+        guard !audible.isEmpty else { return }
+        onQueue {
+            guard self.policy.sends, !self.isEcho(audible) else { return }
             let now = Date()
             // The first cue after the room has been quiet is the datagram a
             // sleeping radio drops. Send that one again. Same event id, so
@@ -161,17 +187,17 @@ final class MIDISession {
             self.nextEvent &+= 1
             if self.nextEvent == 0 { self.nextEvent = 1 }
             self.remember(ssrc: self.ssrc, event: event)
-            self.fanout(midiData, event: event)
+            self.fanout(audible, event: event)
             guard opening else { return }
             self.queue.asyncAfter(deadline: .now() + 0.03) {
-                self.fanout(midiData, event: event)
+                self.fanout(audible, event: event)
             }
         }
     }
 
     private func fanout(_ midiData: Data, event: UInt32) {
         for key in links.keys {
-            guard links[key]?.phase == .connected else { continue }
+            guard links[key]?.phase == .connected, let candidate = links[key], mayDeliver(to: candidate) else { continue }
             links[key]?.sequence &+= 1
             guard let link = links[key] else { continue }
             let packet = AppleMIDI.encodeMIDI(
@@ -377,7 +403,7 @@ final class MIDISession {
                 handleAccepted(message, from: address, midiPort: midiPort)
             case .exit:
                 handleExit(from: address, midiPort: midiPort)
-            case .rejected, .synchronization, .feedback, .directory:
+            case .rejected, .synchronization, .feedback, .directory, .roles:
                 break
             }
         case .sync(let sync):
@@ -388,6 +414,8 @@ final class MIDISession {
             touch(address, midiPort: midiPort)
         case .directory(_, let peers):
             if !midiPort { handleDirectory(peers, from: address) }
+        case .roles(let roles):
+            if !midiPort { handleRoles(roles, from: address) }
         }
     }
 
@@ -402,6 +430,8 @@ final class MIDISession {
         link.lastHeard = Date()
         link.missingSince = nil
         if !message.name.isEmpty { link.name = message.name }
+        link.remoteSSRC = message.ssrc
+        rememberOrigin(link, override: true)
         let ourInviteIsWinning = link.weInitiate
             && link.phase == .invitingControl
             && link.token != 0
@@ -434,6 +464,8 @@ final class MIDISession {
         let controlAddress = midiPort ? address.withPort(address.port &- 1) : address
         guard var link = links[controlAddress.key], link.weInitiate, message.token == link.token else { return }
         link.lastHeard = Date()
+        link.remoteSSRC = message.ssrc
+        rememberOrigin(link, override: true)
         if !midiPort && link.phase == .invitingControl {
             link.phase = .invitingMIDI
             link.attempts = 0
@@ -452,6 +484,8 @@ final class MIDISession {
         let key = address.withPort(address.port &- 1).key
         guard var link = links[key] else { return }
         link.lastHeard = Date()
+        link.remoteSSRC = sync.ssrc
+        rememberOrigin(link, override: true)
         let now = AppleMIDIClock.now()
         switch sync.count {
         case 0:
@@ -473,20 +507,43 @@ final class MIDISession {
         link.lastHeard = Date()
         links[key] = link
         guard payload.ssrc != ssrc, !payload.midi.isEmpty else { return }
+        let audible = CueBytes.audible(payload.midi)
+        guard !audible.isEmpty else { return }
         guard remember(ssrc: payload.ssrc, event: payload.timestamp) else { return }
-        onMIDI?(payload.midi)
+        let origin = origins[payload.ssrc]
+        let senderAllows = origin?.sends ?? true
+        let accepted = origin.map { policy.accepts($0.uuid) } ?? true
+        if policy.receives && senderAllows && accepted {
+            rememberEcho(audible)
+            onMIDI?(audible)
+        }
+        guard senderAllows else { return }
         for other in links.keys where other != key {
-            guard links[other]?.phase == .connected else { continue }
+            guard let hop = links[other], hop.phase == .connected, mayDeliver(to: hop) else { continue }
             links[other]?.sequence &+= 1
             guard let hop = links[other] else { continue }
             let packet = AppleMIDI.encodeMIDI(
                 sequence: hop.sequence,
                 timestamp: payload.timestamp,
                 ssrc: payload.ssrc,
-                midi: payload.midi
+                midi: audible
             )
             midi.send(packet, to: hop.address.withPort(hop.address.port &+ 1))
         }
+    }
+
+    private func handleRoles(_ roles: [AppleMIDI.CueRole], from address: UDPAddress) {
+        let sender = links[address.key]
+        for role in roles {
+            let uuid = role.uuid.lowercased()
+            let aboutSender = !uuid.isEmpty && uuid == sender?.uuid.lowercased()
+            rememberOrigin(ssrc: role.ssrc, uuid: uuid, sends: role.sends, receives: role.receives, override: aboutSender)
+            guard aboutSender, let key = links.first(where: { $0.value.uuid.lowercased() == uuid })?.key else { continue }
+            links[key]?.remoteSSRC = role.ssrc
+            links[key]?.announcedSends = role.sends
+            links[key]?.announcedReceives = role.receives
+        }
+        publish()
     }
 
     private func handleDirectory(_ entries: [AppleMIDI.DirectoryEntry], from address: UDPAddress) {
@@ -584,10 +641,52 @@ final class MIDISession {
         let entries = connected.map {
             AppleMIDI.DirectoryEntry(ip: $0.address.ip, port: $0.address.port, uuid: $0.uuid, name: $0.name)
         }
+        var roles = [AppleMIDI.CueRole(uuid: localUUID, ssrc: ssrc, sends: policy.sends, receives: policy.receives)]
+        for link in connected where link.remoteSSRC != 0 && !link.uuid.isEmpty {
+            roles.append(AppleMIDI.CueRole(
+                uuid: link.uuid,
+                ssrc: link.remoteSSRC,
+                sends: link.announcedSends,
+                receives: link.announcedReceives
+            ))
+        }
+        let rolesPacket = AppleMIDI.encodeRoles(roles)
         let packet = AppleMIDI.encodeDirectory(ssrc: ssrc, peers: entries)
         for link in connected {
+            control.send(rolesPacket, to: link.address)
             control.send(packet, to: link.address)
         }
+    }
+
+    private func mayDeliver(to link: Link) -> Bool {
+        link.announcedReceives && policy.delivers(to: link.uuid)
+    }
+
+    private func rememberOrigin(_ link: Link, override: Bool) {
+        rememberOrigin(
+            ssrc: link.remoteSSRC,
+            uuid: link.uuid,
+            sends: link.announcedSends,
+            receives: link.announcedReceives,
+            override: override
+        )
+    }
+
+    private func rememberOrigin(ssrc: UInt32, uuid: String, sends: Bool, receives: Bool, override: Bool) {
+        guard ssrc != 0, ssrc != self.ssrc else { return }
+        if !override, origins[ssrc] != nil { return }
+        origins[ssrc] = CueOrigin(uuid: uuid.lowercased(), sends: sends, receives: receives)
+    }
+
+    private func rememberEcho(_ data: Data) {
+        let now = Date()
+        echoes.removeAll { now.timeIntervalSince($0.1) > 0.25 }
+        echoes.append((data, now))
+    }
+
+    private func isEcho(_ data: Data) -> Bool {
+        let now = Date()
+        return echoes.contains { $0.0 == data && now.timeIntervalSince($0.1) <= 0.25 }
     }
 
     private func store(_ link: Link, replacing key: String) {
@@ -655,7 +754,10 @@ final class MIDISession {
                 id: key,
                 name: link.name.isEmpty ? "Mac" : link.name,
                 status: link.status,
-                via: link.status == .bridged ? link.via : nil
+                via: link.status == .bridged ? link.via : nil,
+                uuid: link.uuid,
+                sends: link.announcedSends,
+                receives: link.announcedReceives
             )
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -689,6 +791,9 @@ private struct Link {
     var opened: Date
     var via: String?
     var viaSeen: Date?
+    var remoteSSRC: UInt32 = 0
+    var announcedSends: Bool = true
+    var announcedReceives: Bool = true
 
     enum Phase: String {
         case idle
