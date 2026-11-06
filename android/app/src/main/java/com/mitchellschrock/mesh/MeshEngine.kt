@@ -42,6 +42,11 @@ class MeshEngine(
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+    @Volatile private var knownPeers = 0
+    private val recoverSearch = Runnable {
+        if (knownPeers == 0) discovery?.restart()
+        scheduleSearchRecovery()
+    }
 
     fun start(room: MeshRoom, catalog: List<MeshRoom>, cues: mesh.CuePolicy) {
         roomID = room.id
@@ -56,7 +61,10 @@ class MeshEngine(
         midiSocket = pair.second
         val session = MidiSession(localName, localUUID, pair.first, pair.second, room.id, cues)
         session.onMIDI = { data -> listener.onMidi(data) }
-        session.onChange = { peers -> main.post { listener.onPeers(peers) } }
+        session.onChange = { peers ->
+            knownPeers = peers.size
+            main.post { listener.onPeers(peers) }
+        }
         session.start()
         this.session = session
         listener.onReady(pair.first.port, null)
@@ -73,6 +81,7 @@ class MeshEngine(
         discovery.start(room, catalog)
         this.discovery = discovery
         watchNetwork()
+        scheduleSearchRecovery()
     }
 
     fun setCues(cues: mesh.CuePolicy) {
@@ -111,11 +120,17 @@ class MeshEngine(
             }
         }
         connectivity = null
+        main.removeCallbacks(recoverSearch)
         discovery?.stop()
         discovery = null
         session?.stop()
         session = null
         releaseRadio()
+    }
+
+    private fun scheduleSearchRecovery() {
+        main.removeCallbacks(recoverSearch)
+        main.postDelayed(recoverSearch, 15_000)
     }
 
     private fun watchNetwork() {

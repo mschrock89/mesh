@@ -102,9 +102,24 @@ class MeshDiscovery(
     }
 
     private fun reopen() {
-        closeAll()
+        val stale = browsers.toList()
+        browsers.clear()
         synchronized(lock) { resolved.clear() }
         emit()
+        // Closing JmDNS can block until its announcements time out. Do that off
+        // to the side so Reconnect still opens a new search immediately.
+        Thread({
+            for (dns in stale) {
+                try {
+                    dns.unregisterAllServices()
+                } catch (_: Exception) {
+                }
+                try {
+                    dns.close()
+                } catch (_: Exception) {
+                }
+            }
+        }, "mesh-mdns-close").apply { isDaemon = true }.start()
         val addresses = eligible()
         for (address in addresses) {
             try {

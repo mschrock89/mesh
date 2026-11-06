@@ -4,12 +4,12 @@ import os
 final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
     var onPeers: (([DiscoveredPeer]) -> Void)?
     var onRooms: (([AnnouncedRoom]) -> Void)?
-    private let browser = NetServiceBrowser()
+    private var browser: NetServiceBrowser?
     private var services: [String: NetService] = [:]
     private var resolved: [String: ResolvedService] = [:]
     private let localUUID: String
     private let localPort: UInt16
-    private let localIPs: Set<UInt32>
+    private var localIPs: Set<UInt32>
     private var roomID: String
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "bonjour")
 
@@ -27,20 +27,38 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
     }
 
     func start() {
-        browser.delegate = self
-        browser.schedule(in: .main, forMode: .common)
-        browser.searchForServices(ofType: Self.serviceType, inDomain: "local.")
+        openBrowser()
     }
 
+    /// A search that has gone quiet will not start again on the same browser.
+    /// macOS ignores `searchForServices` until the previous search has fully
+    /// stopped, and a stalled browser often never reports that. Replace it.
     func restart() {
-        browser.stop()
+        localIPs = LocalAddresses.ipv4()
+        browser?.delegate = nil
+        browser?.stop()
+        browser = nil
+        for service in services.values {
+            service.delegate = nil
+            service.stop()
+        }
         services.removeAll()
         resolved.removeAll()
         emit()
+        openBrowser()
+        log.info("Searching the network again.")
+    }
+
+    private func openBrowser() {
+        let browser = NetServiceBrowser()
+        browser.delegate = self
+        browser.schedule(in: .main, forMode: .common)
         browser.searchForServices(ofType: Self.serviceType, inDomain: "local.")
+        self.browser = browser
     }
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        guard browser === self.browser else { return }
         service.delegate = self
         service.schedule(in: .main, forMode: .common)
         services[service.name] = service
@@ -48,12 +66,14 @@ final class PeerBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate
     }
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        guard browser === self.browser else { return }
         services.removeValue(forKey: service.name)
         resolved.removeValue(forKey: service.name)
         emit()
     }
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        guard browser === self.browser else { return }
         log.error("Bonjour search failed: \(String(describing: errorDict), privacy: .public)")
     }
 

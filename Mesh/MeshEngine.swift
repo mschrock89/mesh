@@ -37,6 +37,7 @@ final class MeshEngine {
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
     private var liveActivity: NSObjectProtocol?
+    private var discoveryWatch: DispatchSourceTimer?
     private let log = Logger(subsystem: "com.mitchellschrock.Mesh", category: "engine")
 
     init() {
@@ -165,6 +166,7 @@ final class MeshEngine {
         }
         browser.start()
         self.browser = browser
+        watchDiscovery()
 
         let publisher = ServicePublisher(
             name: localName,
@@ -206,6 +208,24 @@ final class MeshEngine {
         }
         monitor.start(queue: DispatchQueue(label: "mesh.path"))
         pathMonitor = monitor
+    }
+
+    /// Bonjour can stop delivering devices while Mesh is still advertising.
+    /// Reconnect used to ask the same search to start again, which macOS ignores,
+    /// so the button left both devices on Searching. A fresh search is started
+    /// whenever the room stays empty.
+    private func watchDiscovery() {
+        discoveryWatch?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 15, repeating: 15)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.networkUp else { return }
+            let peers = self.session?.snapshots() ?? []
+            guard peers.isEmpty else { return }
+            self.browser?.restart()
+        }
+        timer.resume()
+        discoveryWatch = timer
     }
 
     private func createMIDIPorts(session: MIDISession) -> Bool {
